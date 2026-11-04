@@ -15,6 +15,7 @@ from musicpilot.config import Settings
 from musicpilot.services.jobs import JobManager
 from musicpilot.services.scraper import ScraperService
 from musicpilot.services.settings_service import SettingsService
+from musicpilot.services.watcher import AutoScraper
 
 SESSION_COOKIE = "mp_session"
 SESSION_MAX_AGE = 7 * 24 * 3600
@@ -28,6 +29,7 @@ class AppContext:
     metadata: MetadataService
     scraper: ScraperService
     jobs: JobManager
+    watcher: AutoScraper
     secret: str
     auth_enabled: bool
     started_at: float

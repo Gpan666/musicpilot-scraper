@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     scan_concurrency: int = 4
     job_concurrency: int = 2
 
+    watch_enabled: bool = False
+    watch_interval: float = 30.0
+    watch_settle: float = 10.0
+
     @property
     def database_path(self) -> Path:
         return self.data_dir / "musicpilot.db"
@@ -115,6 +119,9 @@ class Settings(BaseSettings):
             "metadata_sources": list(self.sources),
             "confidence_threshold": self.confidence_threshold,
             "unknown_placeholder": self.unknown_placeholder,
+            "watch_enabled": self.watch_enabled,
+            "watch_interval": self.watch_interval,
+            "watch_settle": self.watch_settle,
         }
 
 
@@ -135,6 +142,10 @@ class RuntimeSettings(BaseModel):
     )
     confidence_threshold: float = Field(default=0.62, ge=0.0, le=1.0)
     unknown_placeholder: str = Field(default="Unknown", min_length=1, max_length=40)
+    # 自动刮削：轮询源目录，发现新文件就自动开一个刮削任务
+    watch_enabled: bool = False
+    watch_interval: float = Field(default=30.0, ge=5.0, le=3600.0)
+    watch_settle: float = Field(default=10.0, ge=0.0, le=3600.0)
 
     @property
     def source_root(self) -> Path:

@@ -23,6 +23,7 @@ from musicpilot.api import (
     routes_jobs,
     routes_meta,
     routes_settings,
+    routes_watch,
 )
 from musicpilot.api.auth import bootstrap_admin, require_session
 from musicpilot.api.auth import router as auth_router
@@ -31,6 +32,7 @@ from musicpilot.config import load_settings
 from musicpilot.services.jobs import JobManager
 from musicpilot.services.scraper import ScraperService
 from musicpilot.services.settings_service import SettingsService
+from musicpilot.services.watcher import AutoScraper
 
 logger = logging.getLogger("musicpilot")
 
@@ -47,6 +49,8 @@ def create_app() -> FastAPI:
     scraper = ScraperService(base, store, metadata)
     settings_service = SettingsService(base, store)
     jobs = JobManager(store, scraper, settings_service)
+    watcher = AutoScraper(jobs, settings_service)
+    jobs.attach_watcher(watcher)
     context = AppContext(
         base=base,
         store=store,
@@ -54,6 +58,7 @@ def create_app() -> FastAPI:
         metadata=metadata,
         scraper=scraper,
         jobs=jobs,
+        watcher=watcher,
         secret=secret,
         auth_enabled=True,
         started_at=time.time(),
@@ -62,10 +67,12 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await metadata.startup()
+        watcher.start()
         logger.info("MusicPilot Scraper %s ready", __version__)
         try:
             yield
         finally:
+            await watcher.shutdown()
             await jobs.shutdown()
             await metadata.shutdown()
 
@@ -96,6 +103,7 @@ def create_app() -> FastAPI:
     protected.include_router(routes_files.router)
     protected.include_router(routes_jobs.router)
     protected.include_router(routes_cover.router)
+    protected.include_router(routes_watch.router)
     app.include_router(protected)
 
     static_dir = base.static_dir
