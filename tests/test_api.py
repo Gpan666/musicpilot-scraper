@@ -171,7 +171,7 @@ def test_manual_choice_overrides_metadata(
     assert item["confidence"] == 1.0
     assert "波西米亚狂想曲" in item["target"]
     assert "歌剧院之夜" in item["target"]
-    assert "人工选择" in item["detail"]
+    assert "预览页选择" in item["detail"]
 
 
 def test_dry_run_ignores_choices(client: TestClient, workspace: dict[str, Any]) -> None:

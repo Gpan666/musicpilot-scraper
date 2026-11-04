@@ -43,6 +43,10 @@ class Resolution:
         }
 
 
+# 任务明细的说明列对用户展示，来源名一律用中文，不出现英文品牌以外的词。
+SOURCE_LABELS = {"musicbrainz": " MusicBrainz", "netease": "网易云", "local": "本地标签"}
+
+
 class MetadataService:
     def __init__(self, settings: Settings, store: Store) -> None:
         self.settings = settings
@@ -95,7 +99,7 @@ class MetadataService:
                 metadata=local,
                 confidence=1.0 if not missing else 0.0,
                 source="local",
-                reason="仅使用本地标签与文件名（未启用在线查询或缺少可用标题）",
+                reason="未查在线，只用本地标签",
                 needs_review=bool(missing),
             )
 
@@ -108,10 +112,9 @@ class MetadataService:
                 confidence=ranked[0].score if ranked else 0.0,
                 source="local",
                 reason=(
-                    f"在线候选最高匹配度 {ranked[0].score:.2f} 低于阈值 "
-                    f"{runtime.confidence_threshold:.2f}，未采用在线结果"
+                    f"匹配度 {ranked[0].score:.2f} 低于阈值，保留原标签"
                     if ranked
-                    else "在线元数据源没有返回结果，保留本地信息"
+                    else "在线无结果，保留原标签"
                 ),
                 needs_review=bool(missing),
                 candidates=ranked[:5],
@@ -124,8 +127,8 @@ class MetadataService:
             confidence=best.score,
             source=best.metadata.source,
             reason=(
-                f"采用 {best.metadata.source} 候选（匹配度 {best.score:.2f}），"
-                f"仅补全本地缺失字段"
+                f"取自{SOURCE_LABELS.get(best.metadata.source, best.metadata.source)}"
+                f"（匹配度 {best.score:.2f}）"
             ),
             needs_review=best.score < 0.8 or bool(still_missing),
             candidates=ranked[:5],

@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends
 from musicpilot import __version__
 from musicpilot.api.context import AppContext, get_context
 from musicpilot.api.schemas import CapabilityProbe
-from musicpilot.domain.transfer import describe_modes, device_of, inspect_modes
+from musicpilot.domain.transfer import (
+    describe_modes,
+    device_of,
+    inspect_modes,
+    mode_label,
+)
 
 public_router = APIRouter(tags=["meta"])
 router = APIRouter(tags=["meta"])
@@ -96,6 +101,9 @@ def dashboard(context: AppContext = Depends(get_context)) -> dict[str, Any]:
         ),
         "capabilities": [item.as_dict() for item in inspect_modes(source, library)],
         "jobs": context.jobs.list(6),
-        "recent_done": context.store.recent_done(8),
+        "recent_done": [
+            {**row, "mode_label": mode_label(str(row.get("mode") or ""))}
+            for row in context.store.recent_done(8)
+        ],
         "version": __version__,
     }

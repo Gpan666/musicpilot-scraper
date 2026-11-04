@@ -152,7 +152,7 @@ class ScraperService:
                             target="",
                             mode=runtime.transfer_mode.value,
                             status=ItemStatus.FAILED.value,
-                            detail=f"处理异常：{result}",
+                            detail="处理出错，详见日志",
                         )
                     )
                     continue
@@ -217,7 +217,7 @@ class ScraperService:
                 metadata=meta,
                 confidence=1.0,
                 needs_review=False,
-                reason=f"按预览页的人工选择写入（候选来自 {meta.source}）",
+                reason="采用预览页选择",
                 source=meta.source,
             )
         local = audio.local_metadata
@@ -230,7 +230,7 @@ class ScraperService:
                 source_filename=audio.display_name,
                 unknown=runtime.unknown_placeholder,
             )
-        except ValueError as exc:
+        except ValueError:
             return ProcessResult(
                 PlanItem(
                     source=audio.path,
@@ -238,7 +238,7 @@ class ScraperService:
                     mode=mode.value,
                     status=ItemStatus.FAILED.value,
                     confidence=resolution.confidence,
-                    detail=f"无法生成目标路径：{exc}",
+                    detail="无法生成目标路径，请检查命名模板",
                 ),
                 (0, 1, 0),
             )
@@ -279,7 +279,7 @@ class ScraperService:
                 replace(
                     base_item,
                     status=ItemStatus.SKIPPED.value,
-                    detail=f"置信度不足，按选项跳过：{resolution.reason}",
+                    detail="匹配度不足，已跳过",
                 ),
                 (0, 0, 1),
             )
@@ -303,23 +303,19 @@ class ScraperService:
                 )
             except OSError as exc:
                 written = []
-                resolution = replace(resolution, reason=f"{resolution.reason}；写标签失败：{exc}")
+                resolution = replace(resolution, reason=f"写标签失败：{exc}")
 
+        # 说明列只放一两句中文摘要，细节见日志与悬停提示。
         tag_note = ""
         if runtime.write_tags:
-            if written:
-                tag_note = f"已写入标签 {', '.join(written)}。"
-            else:
-                tag_note = "标签未写入（文件格式不支持或没有可写字段）。"
-            if mode in {TransferMode.HARDLINK, TransferMode.SYMLINK} and written:
-                tag_note += "链接共享源文件数据，源文件的标签同样被补全。"
+            tag_note = "已写标签。" if written else "标签未写入（格式不支持或无可用字段）。"
 
         if not request.organize:
             return ProcessResult(
                 replace(
                     base_item,
                     status=ItemStatus.DONE.value,
-                    detail=f"{tag_note}本次未整理文件。{resolution.reason}",
+                    detail=f"{tag_note}未整理文件。{resolution.reason}",
                 ),
                 (1, 0, 0),
             )
