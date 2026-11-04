@@ -23,12 +23,22 @@ _TAG_KEYS: dict[str, tuple[str, ...]] = {
 _COVER_KEYS = ("APIC", "covr", "metadata_block_picture", "pictures")
 
 
+def _safe_get(audio: Any, key: str) -> Any:
+    """Read a raw tag value, tolerating mutagen's inconsistent backends.
+
+    mutagen's Vorbis-family tags (FLAC/Ogg/Opus) raise ``ValueError`` on a
+    *missing* key instead of returning ``None`` like the MP3/ID3 backend does.
+    Any lookup failure is treated as "no value" so a scan never crashes.
+    """
+    try:
+        return audio.get(key)
+    except (KeyError, ValueError, AttributeError, TypeError):
+        return None
+
+
 def _first(audio: Any, keys: tuple[str, ...]) -> str | None:
     for key in keys:
-        try:
-            value = audio.get(key)
-        except (AttributeError, TypeError):
-            continue
+        value = _safe_get(audio, key)
         if value is None:
             continue
         values = value if isinstance(value, (list, tuple)) else [value]
@@ -66,7 +76,7 @@ def read_tags(path: Path) -> tuple[TrackMetadata, bool, dict[str, Any]]:
         return empty, False, {}
 
     def tag(field: str) -> str | None:
-        return _first(audio, _TAG_KEYS[field]) if hasattr(audio, "get") else None
+        return _first(audio, _TAG_KEYS[field])
 
     date_text = tag("date")
     year = _int_value(date_text[:4] if date_text else None, limit=9999)
@@ -82,8 +92,7 @@ def read_tags(path: Path) -> tuple[TrackMetadata, bool, dict[str, Any]]:
         external_id=str(path),
     )
     has_cover = any(
-        (hasattr(audio, "get") and audio.get(key))
-        or getattr(audio, "pictures", None)
+        _safe_get(audio, key) or getattr(audio, "pictures", None)
         for key in _COVER_KEYS
     )
     info = getattr(audio, "info", None)
