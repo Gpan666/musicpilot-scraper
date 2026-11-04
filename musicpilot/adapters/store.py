@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS metadata_cache (
     payload TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -242,6 +249,66 @@ class Store:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ---- users ----------------------------------------------------------
+    def user_count(self) -> int:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+        return int(row["n"])
+
+    def get_user(self, username: str) -> dict[str, Any] | None:
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE username=?", (username,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, username, is_admin, created_at FROM users ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_user(
+        self, username: str, password_hash: str, *, is_admin: bool = False
+    ) -> dict[str, Any]:
+        """Insert a user; raises sqlite3.IntegrityError when the name is taken."""
+        self.initialize()
+        now = time.time()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO users(username, password_hash, is_admin, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (username, password_hash, int(is_admin), now),
+            )
+        return {
+            "id": cursor.lastrowid,
+            "username": username,
+            "is_admin": is_admin,
+            "created_at": now,
+        }
+
+    def delete_user(self, username: str) -> bool:
+        """Only used by tests/admin tooling; never removes the last admin."""
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT is_admin FROM users WHERE username=?", (username,)
+            ).fetchone()
+            if row is None:
+                return False
+            if row["is_admin"]:
+                remaining = connection.execute(
+                    "SELECT COUNT(*) AS n FROM users WHERE is_admin=1"
+                ).fetchone()["n"]
+                if remaining <= 1:
+                    return False
+            connection.execute("DELETE FROM users WHERE username=?", (username,))
+        return True
 
     # ---- metadata cache -------------------------------------------------
     def cache_get(self, key: str, *, max_age: float = 7 * 24 * 3600) -> Any | None:

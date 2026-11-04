@@ -33,6 +33,12 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
 def client(workspace: dict[str, Any]) -> Any:
     app = create_app()
     with TestClient(app) as test_client:
+        # Every API test runs against an authenticated session.
+        created = test_client.post(
+            "/api/auth/register",
+            json={"username": "tester", "password": "test-password-123"},
+        )
+        assert created.status_code == 200, created.text
         yield test_client
 
 

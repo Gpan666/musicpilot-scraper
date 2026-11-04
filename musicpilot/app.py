@@ -18,7 +18,7 @@ from musicpilot import __version__
 from musicpilot.adapters.metadata.service import MetadataService
 from musicpilot.adapters.store import Store
 from musicpilot.api import routes_files, routes_jobs, routes_meta, routes_settings
-from musicpilot.api.auth import require_session
+from musicpilot.api.auth import bootstrap_admin, require_session
 from musicpilot.api.auth import router as auth_router
 from musicpilot.api.context import AppContext, resolve_secret
 from musicpilot.config import load_settings
@@ -35,6 +35,7 @@ def create_app() -> FastAPI:
 
     store = Store(base.database_path)
     store.initialize()
+    bootstrap_admin(store, base)
     secret = resolve_secret(base)
     metadata = MetadataService(base, store)
     scraper = ScraperService(base, store, metadata)
@@ -48,7 +49,7 @@ def create_app() -> FastAPI:
         scraper=scraper,
         jobs=jobs,
         secret=secret,
-        auth_enabled=bool(base.admin_password),
+        auth_enabled=True,
         started_at=time.time(),
     )
 
