@@ -965,11 +965,11 @@ function renderSettings() {
         <label class="field"><span class="field-label">稳定等待（秒）</span>
           <input id="f-watch-settle" type="number" min="0" max="3600" step="5" value="${esc(watch.settle ?? 10)}"></label>
       </div>
-      <p class="small muted" style="margin:8px 0 12px">稳定等待用于避开「还在下载 / 还在写入」的半成品文件；已经刮削过的文件不会被再次处理，切换目录会重新统计。</p>
+      <p class="small muted" style="margin:8px 0 12px">只处理<strong>开启监控之后</strong>新出现的文件：开启那一刻已存在的存量文件只登记、不刮削，想刮请手动点。稳定等待用于避开「还在下载 / 还在写入」的半成品文件，下载器的 <code>.part</code> / <code>.!qB</code> 之类临时文件也不会触发。已处理记录存在数据库里，重启不会重刮。</p>
       <div class="btn-row">
         <button class="ghost-btn" id="watch-reset">把现有文件标记为已处理</button>
         <span class="small muted">${watch.enabled
-          ? `已记录 ${esc(watch.tracked || 0)} 个文件${watch.last_scan ? ` · 上次检查 ${esc(fmtTime(watch.last_scan))}` : ''}${watch.last_job_label ? ` · 最近任务：${esc(watch.last_job_label)}` : ''}`
+          ? `已记录 ${esc(watch.tracked || 0)} 个文件（含开启前就存在的 ${esc(watch.baselined || 0)} 个，不参与刮削）${watch.last_scan ? ` · 上次检查 ${esc(fmtTime(watch.last_scan))}` : ''}${watch.last_job_label ? ` · 最近任务：${esc(watch.last_job_label)}` : ''}`
           : '开启后这里会显示检查状态'}</span>
       </div>
       ${watch.last_error ? `<p class="small" style="color:var(--danger);margin-top:8px">${esc(watch.last_error)}</p>` : ''}

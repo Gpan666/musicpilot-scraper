@@ -3,8 +3,14 @@
 用轮询而不是 inotify：容器里的源目录通常是 NFS / SMB / FUSE 挂载，
 文件系统事件在这些场景下并不可靠，而一次目录遍历对个人音乐库来说足够便宜。
 
-判定「新文件」的依据是（路径, 大小, mtime）。记下之后就不再重复处理，
-即使文件因为移动 / 硬链接而消失了也一样——它已经被刮削过。
+三条硬规则，缺一条就会「自动刮削一直触发」：
+
+1. **已处理的文件写进 SQLite**（``watch_seen``），不只在内存里。进程重启、
+   容器更新后仍然认得历史文件，不会把整个源目录当成新文件重刮一遍。
+2. **开启监控的那一刻，源目录里已有的文件算作旧文件**，只记录不刮削。
+   老文件想刮就手动点，或先「把现有文件标记为已处理」再放新文件。
+3. **刮削中间产物（``.part`` / ``.!qB`` / ``.aria2`` …）等写完再说**，
+   半成品文件不会被当成新文件反复触发任务。
 """
 
 from __future__ import annotations
@@ -24,10 +30,22 @@ from musicpilot.services.settings_service import SettingsError, SettingsService
 
 logger = logging.getLogger("musicpilot.watcher")
 
-# 每次最多排这么多文件，避免一次性把上千个旧文件全塞进一个任务
+# 每次最多排这么多文件，避免一次性把上千个文件塞进一个任务
 MAX_BATCH = 500
-# 已经处理过的文件指纹上限，防止无限增长
+# 已处理指纹上限，与 Store._MAX_SEEN 对应
 _MAX_SEEN = 200_000
+# 下载器的临时文件后缀：还没写完，等它变成正式文件名再说
+_PARTIAL_SUFFIXES = (
+    ".part",
+    ".partial",
+    ".!qb",
+    ".aria2",
+    ".crdownload",
+    ".download",
+    ".tmp",
+    ".temp",
+    ".filepart",
+)
 
 
 class AutoScraper:
@@ -39,8 +57,17 @@ class AutoScraper:
         self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._seen: dict[str, tuple[int, float]] = {}
+        self._pending: dict[str, tuple[int, float]] = {}
         self._signature: tuple[str, ...] | None = None
         self._last_sync = 0.0
+        self._loaded = False
+        # 本轮待写库的指纹；攒着批量落盘，别每轮都开一次写入事务
+        self._dirty: dict[str, tuple[int, float]] = {}
+        self._dirty_prune = False
+        # 下一轮扫描只记录存量文件、不排任务（首次开启或刚换了源目录）
+        self._baseline_pending = True
+        # 指纹攒到这个数量再落盘，一次事务写完
+        self.flush_threshold = 20
 
         self.running = False
         self.enabled = False
@@ -49,6 +76,7 @@ class AutoScraper:
         self.last_job_id: str | None = None
         self.last_error = ""
         self.detected = 0
+        self.baselined = 0
 
     # ---- lifecycle ------------------------------------------------------
     def start(self) -> None:
@@ -56,6 +84,7 @@ class AutoScraper:
             self._task = asyncio.create_task(self._loop(), name="musicpilot-watcher")
 
     async def shutdown(self) -> None:
+        self.flush()
         if self._task is None:
             return
         self._task.cancel()
@@ -72,7 +101,11 @@ class AutoScraper:
 
     def applied(self, runtime: RuntimeSettings) -> None:
         """Reflect a settings change immediately instead of on the next poll."""
+        was = self.enabled
         self.enabled = runtime.watch_enabled
+        if runtime.watch_enabled and not was:
+            # 刚开启：源目录里的存量文件当旧文件处理，别一开就全量刮一遍
+            self._baseline_pending = True
         self._last_sync = time.time()
         self.kick()
 
@@ -87,6 +120,7 @@ class AutoScraper:
             "last_job_label": self.jobs.label(self.last_job_id) if self.last_job_id else "",
             "last_error": self.last_error,
             "detected": self.detected,
+            "baselined": self.baselined,
             "tracked": len(self._seen),
         }
 
@@ -94,28 +128,78 @@ class AutoScraper:
         """Treat these files as done so the watcher never picks them up again."""
         for value in paths:
             self._remember(value)
+        self.flush()
+
+    def release(self, paths: list[str]) -> None:
+        """排任务失败时把指纹退回去，下一轮重新判定，别把文件默默丢掉。"""
+        for value in paths:
+            self._seen.pop(value, None)
+            self._dirty.pop(value, None)
 
     def reset(self) -> None:
-        """Forget everything seen so the next scan treats the library as new."""
+        """Forget everything seen: the next scan treats existing files as old ones again."""
         self._seen.clear()
+        self._pending.clear()
+        self._dirty.clear()
+        self._dirty_prune = False
         self._signature = None
+        self._baseline_pending = True
+        self.baselined = 0
         self.detected = 0
+        try:
+            self.jobs.store.clear_seen()
+        except Exception as exc:  # noqa: BLE001 - resetting the UI must not crash
+            self.last_error = f"清空已处理记录失败：{type(exc).__name__}: {exc}"
+            logger.warning("清空 watch_seen 失败", exc_info=True)
         self.kick()
+
+    def flush(self) -> None:
+        """Persist buffered fingerprints; safe to call from the event loop."""
+        if not self._dirty and not self._dirty_prune:
+            return
+        entries, self._dirty = self._dirty, {}
+        prune, self._dirty_prune = self._dirty_prune, False
+        try:
+            if entries:
+                self.jobs.store.save_seen(entries, prune=prune)
+            elif prune:
+                self.jobs.store.save_seen({}, prune=True)
+        except Exception as exc:  # noqa: BLE001 - the loop must survive anything
+            self.last_error = f"记录已处理文件失败：{type(exc).__name__}: {exc}"
+            logger.warning("写入 watch_seen 失败", exc_info=True)
 
     # ---- loop -----------------------------------------------------------
     async def _loop(self) -> None:
         self.running = True
         while True:
             try:
-                self._sync_settings()
-                if self.enabled and self._settle_ready():
+                changed = self._sync_settings()
+                if self.enabled:
+                    self._load_seen()
+                if self.enabled and not changed and self._settle_ready():
                     await self._tick()
+                self._maybe_flush(self.flush_threshold)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the loop must survive anything
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 logger.exception("自动刮削循环出错")
             await self._sleep(self._interval())
+
+    def _load_seen(self) -> None:
+        """Read the persisted fingerprints once per process.
+
+        必须在读设置之后调用：换了源目录时内存指纹已被抹掉，这时把库里的
+        记录读回来，才不会把新目录里的存量文件当成新文件刮一遍。
+        """
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            self._seen.update(self.jobs.store.load_seen())
+        except Exception as exc:  # noqa: BLE001 - fall back to a memory-only run
+            self.last_error = f"读取已处理记录失败：{type(exc).__name__}: {exc}"
+            logger.warning("读取 watch_seen 失败", exc_info=True)
 
     async def _sleep(self, seconds: float) -> None:
         try:
@@ -142,15 +226,28 @@ class AutoScraper:
         except SettingsError:
             return False
 
-    def _sync_settings(self) -> None:
+    def _sync_settings(self) -> bool:
+        """Mirror settings into the loop; True when the source root just changed."""
         runtime = self.settings.get()
-        signature = (str(runtime.source_root), str(runtime.library_root))
-        if self._signature != signature:
-            if self._signature is not None:
-                self._seen.clear()
-            self._signature = signature
-            self._last_sync = time.time()
+        signature = (
+            str(runtime.source_root),
+            str(runtime.library_root),
+            "watch" if runtime.watch_enabled else "off",
+        )
         self.enabled = runtime.watch_enabled
+        if self._signature == signature:
+            return False
+        previous, self._signature = self._signature, signature
+        self._last_sync = time.time()
+        if previous is None:
+            return False
+        # 换源目录或重新开启监控：抹掉内存指纹，下一轮把存量文件当旧文件记下来
+        self._seen.clear()
+        self._pending.clear()
+        self._baseline_pending = True
+        self.baselined = 0
+        self.kick()
+        return True
 
     async def _tick(self) -> None:
         if self.jobs.is_busy() or self.scanning:
@@ -170,34 +267,70 @@ class AutoScraper:
                 max_files=self.jobs.scraper.base.max_scan_files,
             )
             fresh: list[Path] = []
+            baselining = self._baseline_pending
+            if not found:
+                self._baseline_pending = False
             for audio in found:
-                fingerprint = self._fingerprint(str(audio))
-                if fingerprint is None:
-                    continue
-                if self._seen.get(str(audio)) == fingerprint:
+                path = str(audio)
+                if self._partial(audio):
                     continue
                 if self._unstable(audio):
                     continue
+                fingerprint = self._fingerprint(path)
+                if fingerprint is None:
+                    continue
+                if baselining:
+                    # 刚开启 / 刚换目录：存量文件只记不刮，老文件不碰
+                    self._remember(path, fingerprint)
+                    self.baselined += 1
+                    continue
+                if self._seen.get(path) == fingerprint:
+                    self._pending.pop(path, None)
+                    continue
+                if self._pending.get(path) != fingerprint:
+                    # 大小或修改时间还在变：下一轮再确认一次，别抢着刮半成品
+                    self._pending[path] = fingerprint
+                    continue
+                self._pending.pop(path, None)
                 fresh.append(audio)
+            self._baseline_pending = False
             self.last_scan = time.time()
             self.last_error = ""
             if not fresh:
+                self._maybe_flush()
                 return
             batch = sorted(fresh)[:MAX_BATCH]
-            job = self.jobs.start(
-                JobRequest(kind=JobKind.AUTO, paths=[str(path) for path in batch]),
-                title=batch[0].name if len(batch) == 1 else "",
-            )
-            self.mark_processed([str(path) for path in batch])
+            paths = [str(path) for path in batch]
+            self.mark_processed(paths)
+            try:
+                job = self.jobs.start(
+                    JobRequest(kind=JobKind.AUTO, paths=paths),
+                    title=batch[0].name if len(batch) == 1 else "",
+                )
+            except BaseException:
+                self.release(paths)
+                raise
             self.last_job_id = job.id
             self.detected += len(batch)
             logger.info("自动刮削：已排入 %s 个新文件，任务 %s", len(batch), job.id)
+            self._maybe_flush()
         except JobConflict:
             return  # 手动任务在跑，下一轮再看
         except SettingsError as exc:
             self.last_error = str(exc)
         finally:
             self.scanning = False
+
+    def _maybe_flush(self, threshold: int = 50) -> None:
+        """Write buffered fingerprints once they are worth a transaction."""
+        if len(self._dirty) >= threshold or (self._dirty and self._dirty_prune):
+            self.flush()
+
+    @staticmethod
+    def _partial(path: Path) -> bool:
+        """Downloader leftovers: the real file may still be on its way."""
+        name = path.name.lower()
+        return any(name.endswith(suffix) for suffix in _PARTIAL_SUFFIXES)
 
     @staticmethod
     def _fingerprint(path: str) -> tuple[int, float] | None:
@@ -216,8 +349,11 @@ class AutoScraper:
         settle = self.settings.get().watch_settle
         return settle > 0 and time.time() - stat.st_mtime < settle
 
-    def _remember(self, path: str) -> None:
-        self._seen[path] = self._fingerprint(path) or (0, 0.0)
+    def _remember(self, path: str, fingerprint: tuple[int, float] | None = None) -> None:
+        value = fingerprint or self._fingerprint(path) or (0, 0.0)
+        self._seen[path] = value
+        self._dirty[path] = value
         if len(self._seen) > _MAX_SEEN:
             for key in list(self._seen)[: _MAX_SEEN // 10]:
                 self._seen.pop(key, None)
+            self._dirty_prune = True
