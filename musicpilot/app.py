@@ -17,7 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from musicpilot import __version__
 from musicpilot.adapters.metadata.service import MetadataService
 from musicpilot.adapters.store import Store
-from musicpilot.api import routes_files, routes_jobs, routes_meta, routes_settings
+from musicpilot.api import (
+    routes_cover,
+    routes_files,
+    routes_jobs,
+    routes_meta,
+    routes_settings,
+)
 from musicpilot.api.auth import bootstrap_admin, require_session
 from musicpilot.api.auth import router as auth_router
 from musicpilot.api.context import AppContext, resolve_secret
@@ -89,6 +95,7 @@ def create_app() -> FastAPI:
     protected.include_router(routes_settings.router)
     protected.include_router(routes_files.router)
     protected.include_router(routes_jobs.router)
+    protected.include_router(routes_cover.router)
     app.include_router(protected)
 
     static_dir = base.static_dir
