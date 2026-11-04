@@ -179,6 +179,8 @@ class JobManager:
             if self._active_id == job_id:
                 self._active_id = None
             if self._watcher is not None:
+                # 任务收尾立刻把指纹写进库，再唤醒监控：中途重启也不会重刮一遍
+                self._watcher.flush()
                 self._watcher.kick()
 
     def get(self, job_id: str) -> dict[str, Any] | None:
