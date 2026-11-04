@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from musicpilot.adapters.store import Store
-from musicpilot.domain.models import JobSnapshot, JobStatus
+from musicpilot.domain.models import JobKind, JobSnapshot, JobStatus
 from musicpilot.services.scraper import JobRequest, ScraperService
 from musicpilot.services.settings_service import SettingsService
 
@@ -32,12 +34,34 @@ class JobManager:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._events: dict[str, asyncio.Event] = {}
         self._active_id: str | None = None
+        self._watcher: Any | None = None
 
-    def start(self, request: JobRequest, choices: dict[str, dict[str, Any]] | None = None) -> JobSnapshot:
-        if self._active_id is not None:
-            active = self._jobs.get(self._active_id)
-            if active and active.status in {JobStatus.PENDING.value, JobStatus.RUNNING.value}:
-                raise JobConflict(f"已有任务 {active.id} 正在运行，请等待完成或先取消")
+    def attach_watcher(self, watcher: Any) -> None:
+        """Wire the directory watcher in once, after both objects exist."""
+        self._watcher = watcher
+
+    def _requires_idle(self, request: JobRequest) -> bool:
+        """Previews and manual scrapes must not race; the watcher just waits its turn."""
+        return request.kind is not JobKind.AUTO
+
+    def is_busy(self) -> bool:
+        if self._active_id is None:
+            return False
+        active = self._jobs.get(self._active_id)
+        return bool(
+            active and active.status in {JobStatus.PENDING.value, JobStatus.RUNNING.value}
+        )
+
+    def start(
+        self,
+        request: JobRequest,
+        choices: dict[str, dict[str, Any]] | None = None,
+        *,
+        title: str = "",
+    ) -> JobSnapshot:
+        if self._requires_idle(request) and self.is_busy():
+            active = self._jobs[self._active_id]  # type: ignore[index]
+            raise JobConflict(f"已有任务 {active.id} 正在运行，请等待完成或先取消")
         runtime = self.settings.get()
         job = JobSnapshot(
             id=uuid.uuid4().hex[:12],
@@ -50,6 +74,8 @@ class JobManager:
             created_at=time.time(),
             dry_run=request.dry_run,
             message="任务已排队",
+            title=title,
+            auto=request.kind is JobKind.AUTO,
         )
         self._jobs[job.id] = job
         self._events[job.id] = asyncio.Event()
@@ -66,6 +92,7 @@ class JobManager:
             if job is None:
                 return
             done = max(0, processed - failed - skipped)
+            title = job.title or self._title_for(job_id, current)
             updated = replace(
                 job,
                 processed=processed,
@@ -74,6 +101,7 @@ class JobManager:
                 skipped=skipped,
                 current_file=current,
                 message=message,
+                title=title,
             )
             self._jobs[job_id] = updated
             self.store.update_progress(
@@ -84,9 +112,22 @@ class JobManager:
                 skipped=skipped,
                 current_file=current,
                 message=message,
+                title=title,
             )
 
         return update
+
+    def _title_for(self, job_id: str, current: str) -> str:
+        """A human-readable label: the only file name, or the current one."""
+        if current:
+            return Path(current).name
+        raw = (self.store.get_job(job_id) or {}).get("options") or "{}"
+        try:
+            requested = json.loads(raw).get("paths") or []
+        except (TypeError, ValueError, AttributeError):
+            return ""
+        names = [Path(value).name for value in requested if value]
+        return names[0] if len(names) == 1 else ""
 
     async def _run(
         self,
@@ -137,6 +178,8 @@ class JobManager:
             self._events.pop(job_id, None)
             if self._active_id == job_id:
                 self._active_id = None
+            if self._watcher is not None:
+                self._watcher.kick()
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         job = self._jobs.get(job_id)
@@ -154,6 +197,17 @@ class JobManager:
 
     def items(self, job_id: str, *, limit: int = 500, offset: int = 0) -> list[dict[str, Any]]:
         return self.store.list_items(job_id, limit=limit, offset=offset)
+
+    def label(self, job_id: str) -> str:
+        """A display name for a job: its title, else the file count it handled."""
+        job = self.get(job_id) or {}
+        title = str(job.get("title") or "").strip() or str(job.get("current_file") or "").strip()
+        if title:
+            return Path(title).name
+        processed = int(job.get("processed") or 0)
+        kind = str(job.get("kind") or "")
+        prefix = "自动刮削" if kind == JobKind.AUTO.value else "刮削"
+        return f"{prefix} · {processed} 个文件" if processed else prefix
 
     def cancel(self, job_id: str) -> bool:
         event = self._events.get(job_id)
