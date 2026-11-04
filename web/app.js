@@ -41,6 +41,7 @@ const state = {
   capabilities: [],
   options: { organize: true, skipLowConfidence: false },
   picker: { target: null, path: '', root: '', parent: null, entries: [], loading: false },
+  plan: { jobId: null, items: [], choices: new Map(), filter: 'all' },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -440,6 +441,180 @@ async function showFileDetail(path) {
     <p class="mono">${esc(data.preview_target)}</p>`);
 }
 
+/* ---------------- 整理计划：可视化预览 ---------------- */
+const PLAN_FILTERS = [
+  ['all', '全部'], ['needs_review', '需确认'], ['matched', '已匹配'], ['failed', '异常'],
+];
+
+function coverHref(item) {
+  const online = item.cover_url ? `/api/cover?url=${encodeURIComponent(item.cover_url)}` : '';
+  const local = item.source ? `/api/cover?path=${encodeURIComponent(item.source)}` : '';
+  return online || local;
+}
+function planChoice(item) {
+  const entry = state.plan.choices.get(item.source) || { index: -2 };
+  const options = item.candidates || [];
+  if (entry.index === -1) return { index: -1, meta: localMetaOf(item) };
+  const candidate = options[entry.index];
+  if (candidate && candidate.metadata) {
+    const meta = metaOf(candidate.metadata);
+    return { index: entry.index, meta: entry.edits ? { ...meta, ...entry.edits } : meta };
+  }
+  const meta = itemFromPlan(item);
+  return { index: -2, meta: entry.edits ? { ...meta, ...entry.edits } : meta };
+}
+function localMetaOf(item) {
+  return metaOf({
+    title: item.local_title, artist: item.local_artist, album: item.local_album,
+    year: item.local_year, track_number: item.local_track_number,
+  });
+}
+function itemFromPlan(item) {
+  return metaOf({
+    title: item.title, artist: item.artist, album: item.album, year: item.year,
+    track_number: item.track_number,
+  });
+}
+function metaOf(values) {
+  return {
+    title: values.title || '', artist: values.artist || '', album: values.album || '',
+    year: values.year || '', track_number: values.track_number || '',
+  };
+}
+function planCount() {
+  let picked = 0;
+  state.plan.choices.forEach((entry) => { if (entry.index > -2) picked += 1; });
+  return picked;
+}
+function planFilter(item) {
+  const filter = state.plan.filter;
+  if (filter === 'needs_review') return item.status === 'needs_review';
+  if (filter === 'failed') return item.status === 'failed' || item.target === '';
+  if (filter === 'matched') return item.status === 'planned' && item.source_name !== 'local';
+  return true;
+}
+function confidenceTone(value) {
+  if (value >= 0.8) return 'ok';
+  if (value >= 0.62) return 'warn';
+  return 'bad';
+}
+
+function planCard(item, index) {
+  const choice = planChoice(item);
+  const meta = choice.meta;
+  const candidates = item.candidates || [];
+  const chosenLabel = choice.index === -2
+    ? `自动结果 · ${esc(item.source_name || 'local')}`
+    : choice.index === -1 ? '保留文件原标签' : `候选 #${choice.index + 1} · ${esc(candidates[choice.index]?.metadata?.source || '')}`;
+  const candidateButtons = candidates.map((candidate, i) => {
+    const m = candidate.metadata || {};
+    return `<button class="cand-chip${choice.index === i ? ' active' : ''}" data-cand="${i}" data-idx="${index}"
+      title="${esc([m.title, m.artist, m.album, m.year].filter(Boolean).join(' · '))}">
+      <b>${esc(m.title || '—')}</b><span>${esc(m.artist || '')}${m.album ? ` · ${esc(m.album)}` : ''}</span>
+      <em class="conf ${confidenceTone(candidate.score || 0)}">${(candidate.score || 0).toFixed(2)}</em></button>`;
+  }).join('');
+  const field = (key, label) => {
+    const before = item[`local_${key}`] ?? '';
+    const changed = String(before || '') !== String(meta[key] || '');
+    return `<div class="diff-row">
+      <span class="diff-key">${esc(label)}</span>
+      <span class="diff-before${changed ? ' changed' : ''}">${esc(before || '—')}</span>
+      <span class="diff-arrow">→</span>
+      <input class="diff-input" data-field="${key}" data-idx="${index}" value="${esc(meta[key] || '')}" placeholder="—">
+    </div>`;
+  };
+  const tone = confidenceTone(item.confidence || 0);
+  return `<article class="plan-card" data-idx="${index}">
+    <div class="plan-cover">
+      ${item.cover_url || item.source
+        ? `<img src="${esc(coverHref(item))}" alt="" loading="lazy" data-cover="${index}">`
+        : ''}
+      <span class="plan-cover-fallback">♪</span>
+    </div>
+    <div class="plan-main">
+      <div class="plan-head">
+        <div class="plan-titles">
+          <div class="plan-title">${esc(meta.title || fileName(item.source))}</div>
+          <div class="plan-sub">${esc([meta.artist, meta.album, meta.year].filter((x) => x).join(' · ')) || '—'}</div>
+        </div>
+        <div class="plan-flags">
+          ${item.status === 'needs_review' || choice.index > -2 ? '<span class="badge warn">待确认</span>' : statusBadge(item.status)}
+          <span class="conf ${tone}">${(item.confidence || 0).toFixed(2)}</span>
+        </div>
+      </div>
+      <div class="plan-source mono" title="${esc(item.source)}">${esc(fileName(item.source))}</div>
+      <div class="diff">
+        ${field('title', '标题')}${field('artist', '歌手')}${field('album', '专辑')}${field('year', '年份')}
+      </div>
+      <div class="plan-target mono" title="${esc(item.target)}">${esc(item.target || '—')}</div>
+      <div class="plan-foot">
+        <span class="small muted">${chosenLabel}</span>
+        <span class="small muted truncate" title="${esc(item.detail)}">${esc(item.detail)}</span>
+      </div>
+      ${candidates.length ? `<div class="cand-row">${candidateButtons}</div>` : ''}
+      ${candidates.length || (item.local_title && choice.index !== -1) ? `<div class="cand-row">
+        <button class="cand-chip${choice.index === -2 ? ' active' : ''}" data-cand="-2" data-idx="${index}">
+          <b>自动结果</b><span>${esc(item.source_name || 'local')}</span></button>
+        <button class="cand-chip${choice.index === -1 ? ' active' : ''}" data-cand="-1" data-idx="${index}">
+          <b>保留原标签</b><span>${esc(item.local_title || '无')}</span></button>
+      </div>` : ''}
+    </div>
+  </article>`;
+}
+
+function renderPlanCards() {
+  const items = state.plan.items || [];
+  const visible = items.map((item, index) => ({ item, index })).filter(({ item }) => planFilter(item));
+  $('plan-grid').innerHTML = visible.map(({ item, index }) => planCard(item, index)).join('')
+    || '<div class="empty">当前筛选条件下没有条目</div>';
+  $('plan-grid').querySelectorAll('[data-cand]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const index = Number(button.dataset.idx);
+      const item = state.plan.items[index];
+      state.plan.choices.set(item.source, { index: Number(button.dataset.cand) });
+      renderPlanCards();
+      updatePlanBar();
+    });
+  });
+  $('plan-grid').querySelectorAll('[data-field]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const index = Number(input.dataset.idx);
+      const item = state.plan.items[index];
+      const current = planChoice(item);
+      const meta = { ...current.meta };
+      const key = input.dataset.field;
+      meta[key] = key === 'year' || key === 'track_number'
+        ? (Number(input.value) || '') : input.value.trim();
+      let entry = state.plan.choices.get(item.source);
+      if (!entry || entry.index === -2) {
+        const base = (item.candidates || []).findIndex((c) => (
+          (c.metadata?.title || '') === (current.meta.title || '')
+          && (c.metadata?.artist || '') === (current.meta.artist || '')
+        ));
+        entry = { index: base, edits: {} };
+      }
+      entry = { ...entry, edits: { ...(entry.edits || {}), [key]: meta[key] } };
+      state.plan.choices.set(item.source, entry);
+      updatePlanBar();
+    });
+  });
+}
+
+function updatePlanBar() {
+  const picked = planCount();
+  const total = (state.plan.items || []).length;
+  const run = $('run-plan');
+  if (run) run.textContent = picked
+    ? `按选择执行整理（${picked} 处人工调整）`
+    : '按此计划执行整理';
+  const note = $('plan-picked');
+  if (note) note.textContent = String(picked);
+  const hint = $('plan-hint');
+  if (hint) hint.textContent = picked
+    ? `已人工调整 ${picked} / ${total} 项，其余沿用自动结果`
+    : `全部沿用自动结果（共 ${total} 项）；点选候选或改标签即可覆盖`;
+}
+
 async function renderPlan() {
   const job = state.previewJob;
   if (!job) {
@@ -450,35 +625,126 @@ async function renderPlan() {
     document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
     return;
   }
-  let items = [];
-  try { items = (await api(`/api/jobs/${job.id}/items?limit=2000`)).items || []; }
-  catch (error) { toast(error.message, true); }
-  const rows = items.map((item) => `<tr>
-      <td class="truncate" title="${esc(item.source)}">${esc(fileName(item.source))}</td>
-      <td class="mono truncate" title="${esc(item.target)}">${esc(item.target)}</td>
-      <td>${esc(item.mode)}</td>
-      <td>${(item.confidence || 0).toFixed(2)}</td>
-      <td>${item.status === 'needs_review' ? '<span class="badge warn">需人工确认</span>' : statusBadge(item.status)}</td>
-      <td class="muted small">${esc(item.detail)}</td></tr>`).join('');
+  if (!job.created_at) {
+    try { job.created_at = (await api(`/api/jobs/${job.id}`)).job.created_at; }
+    catch (_) { /* timestamp is cosmetic */ }
+  }
+  if (state.plan.jobId !== job.id) {
+    state.plan = { jobId: job.id, items: [], choices: new Map(), filter: 'all' };
+    try {
+      state.plan.items = (await api(`/api/jobs/${job.id}/items?limit=2000`)).items || [];
+    } catch (error) { toast(error.message, true); }
+  }
+  const items = state.plan.items;
+  const review = items.filter((item) => item.status === 'needs_review').length;
+  const matched = items.filter((item) => item.source_name && item.source_name !== 'local').length;
   $('page').innerHTML = `
     <div class="panel">
-      <div class="panel-head"><div><h2>整理计划</h2>
-        <p>${esc(job.id)} · ${job.dry_run ? '预览结果，尚未写入标签或移动任何文件' : '已执行任务'} · 共 ${items.length} 项 · ${fmtTime(job.created_at)}</p></div>
-        <div class="btn-row"><button class="ghost-btn" id="plan-csv">导出 CSV</button>
-          ${job.dry_run ? '<button class="primary-btn" id="run-plan">按此计划执行整理</button>' : ''}</div></div>
-      <div class="table-wrap"><table><thead><tr>
-        <th>源文件</th><th>目标路径</th><th>方式</th><th>置信度</th><th>状态</th><th>说明</th>
-      </tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">没有计划项</td></tr>'}</tbody></table></div>
+      <div class="panel-head"><div><h2>整理计划预览</h2>
+        <p>${esc(job.id)} · ${job.dry_run ? '预览结果，尚未写入标签或移动任何文件' : '已执行任务'} · ${fmtTime(job.created_at)}</p></div>
+        <div class="btn-row">
+          <button class="ghost-btn" id="plan-csv">导出 CSV</button>
+          <button class="ghost-btn" id="plan-table">表格视图</button>
+          ${job.dry_run ? '<button class="primary-btn" id="run-plan">按此计划执行整理</button>' : ''}
+        </div></div>
+      <div class="plan-stats">
+        <div class="plan-stat"><b>${items.length}</b><span>条目</span></div>
+        <div class="plan-stat ok"><b>${matched}</b><span>在线匹配</span></div>
+        <div class="plan-stat warn"><b>${review}</b><span>需确认</span></div>
+        <div class="plan-stat"><b id="plan-picked">0</b><span>人工调整</span></div>
+      </div>
+      <div class="plan-bar">
+        ${PLAN_FILTERS.map(([id, label]) => `<button class="ghost-btn small${state.plan.filter === id ? ' active' : ''}" data-filter="${id}">${label}</button>`).join('')}
+        <span class="small muted" id="plan-hint"></span>
+      </div>
+      <div id="plan-grid" class="plan-grid"></div>
+      <div id="plan-table-wrap" class="hidden"></div>
     </div>
     <div class="panel"><h3>执行说明</h3>
       <p class="muted small" style="margin-top:8px">标签会在文件转移之前写入源文件。复制与移动之后目标文件独立；硬链接与软链接的目标共享源文件数据，源文件的标签也会一起被补全。详见「转移方式说明」。</p>
     </div>`;
+  renderPlanCards();
+  updatePlanBar();
+
+  $('plan-grid').querySelectorAll('img[data-cover]').forEach((img) => {
+    img.addEventListener('error', () => img.classList.add('hidden'), { once: true });
+  });
+  document.querySelectorAll('[data-filter]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.plan.filter = button.dataset.filter;
+      document.querySelectorAll('[data-filter]').forEach((b) => b.classList.toggle('active', b === button));
+      renderPlanCards();
+    });
+  });
   $('plan-csv').addEventListener('click', () => { window.location.href = `/api/jobs/${job.id}/report`; });
+  $('plan-table').addEventListener('click', () => togglePlanTable(items));
   const run = $('run-plan');
   if (run) run.addEventListener('click', async () => {
-    if (!confirm(`确认按计划处理 ${items.length} 个文件？将写入标签并使用「${state.settings.transfer_mode}」方式转移。`)) return;
-    await createJob('scrape', false, items.map((item) => item.source));
+    const choices = buildChoices();
+    const count = Object.keys(choices).length;
+    const outline = count ? `其中 ${count} 个文件按你的人工选择写入。` : '';
+    if (!confirm(`确认处理 ${items.length} 个文件？将写入标签并使用「${state.settings.transfer_mode}」方式转移。${outline}`)) return;
+    await createJob('scrape', false, items.map((item) => item.source), choices);
   });
+}
+
+function buildChoices() {
+  const choices = {};
+  state.plan.choices.forEach((entry, source) => {
+    const item = (state.plan.items || []).find((row) => row.source === source);
+    if (!item) return;
+    let payload = null;
+    if (entry.index === -1) {
+      payload = metaOf({
+        title: item.local_title, artist: item.local_artist, album: item.local_album,
+        year: item.local_year, track_number: item.local_track_number,
+      });
+      payload.source = 'manual';
+    } else {
+      const candidate = (item.candidates || [])[entry.index];
+      if (candidate && candidate.metadata) {
+        payload = metaOf(candidate.metadata);
+        payload.source = candidate.metadata.source || 'manual';
+        payload.cover_url = candidate.metadata.cover_url || null;
+        payload.external_id = candidate.metadata.external_id || '';
+      }
+    }
+    if (!payload) {
+      if (!entry.edits) return;
+      payload = planChoice(item).meta;
+      payload.source = item.source_name || 'manual';
+    }
+    if (entry.edits) payload = { ...payload, ...entry.edits };
+    // An untouched auto result needs no override at all.
+    if (entry.index === -2 && !entry.edits) return;
+    choices[source] = {
+      title: String(payload.title || ''),
+      artist: payload.artist || null,
+      album: payload.album || null,
+      year: payload.year === '' ? null : Number(payload.year) || null,
+      track_number: payload.track_number === '' ? null : Number(payload.track_number) || null,
+      cover_url: payload.cover_url || null,
+      source: payload.source || 'manual',
+      external_id: payload.external_id || '',
+    };
+  });
+  return choices;
+}
+
+function togglePlanTable(items) {
+  const wrap = $('plan-table-wrap');
+  if (!wrap.classList.contains('hidden')) { wrap.classList.add('hidden'); return; }
+  const rows = items.map((item) => `<tr>
+      <td class="truncate" title="${esc(item.source)}">${esc(fileName(item.source))}</td>
+      <td>${esc(item.title || '—')}</td><td>${esc(item.artist || '—')}</td>
+      <td class="mono truncate" title="${esc(item.target)}">${esc(item.target)}</td>
+      <td>${(item.confidence || 0).toFixed(2)}</td>
+      <td>${item.status === 'needs_review' ? '<span class="badge warn">需人工确认</span>' : statusBadge(item.status)}</td>
+    </tr>`).join('');
+  wrap.innerHTML = `<div class="table-wrap"><table><thead><tr>
+      <th>源文件</th><th>标题</th><th>歌手</th><th>目标路径</th><th>置信度</th><th>状态</th>
+    </tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">没有计划项</td></tr>'}</tbody></table></div>`;
+  wrap.classList.remove('hidden');
 }
 
 async function renderJobs() {
@@ -540,12 +806,13 @@ async function showJobItems(jobId) {
   $('job-items').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-async function createJob(kind, dryRun, forcedPaths) {
+async function createJob(kind, dryRun, forcedPaths, choices) {
   const body = {
     kind, dry_run: dryRun, paths: forcedPaths || [...state.selected],
     organize: state.options.organize,
     skip_low_confidence: state.options.skipLowConfidence,
   };
+  if (choices && Object.keys(choices).length) body.choices = choices;
   try {
     const job = await api('/api/jobs', { method: 'POST', body });
     state.currentJobId = job.id;
