@@ -110,6 +110,13 @@ class PlanItem:
     track_number: int | None = None
     detail: str = ""
     link_target: str | None = None
+    local_title: str = ""
+    local_artist: str | None = None
+    local_album: str | None = None
+    local_year: int | None = None
+    local_track_number: int | None = None
+    cover_url: str | None = None
+    candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

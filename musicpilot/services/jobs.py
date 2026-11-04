@@ -33,7 +33,7 @@ class JobManager:
         self._events: dict[str, asyncio.Event] = {}
         self._active_id: str | None = None
 
-    def start(self, request: JobRequest) -> JobSnapshot:
+    def start(self, request: JobRequest, choices: dict[str, dict[str, Any]] | None = None) -> JobSnapshot:
         if self._active_id is not None:
             active = self._jobs.get(self._active_id)
             if active and active.status in {JobStatus.PENDING.value, JobStatus.RUNNING.value}:
@@ -55,7 +55,9 @@ class JobManager:
         self._events[job.id] = asyncio.Event()
         self.store.save_job(job, request.as_dict())
         self._active_id = job.id
-        self._tasks[job.id] = asyncio.create_task(self._run(job.id, request, runtime))
+        self._tasks[job.id] = asyncio.create_task(
+            self._run(job.id, request, runtime, choices or {})
+        )
         return job
 
     def _make_progress(self, job_id: str) -> Any:
@@ -86,7 +88,13 @@ class JobManager:
 
         return update
 
-    async def _run(self, job_id: str, request: JobRequest, runtime: Any) -> None:
+    async def _run(
+        self,
+        job_id: str,
+        request: JobRequest,
+        runtime: Any,
+        choices: dict[str, dict[str, Any]],
+    ) -> None:
         event = self._events[job_id]
         self._jobs[job_id] = replace(
             self._jobs[job_id], status=JobStatus.RUNNING.value, message="正在扫描与刮削"
@@ -101,6 +109,7 @@ class JobManager:
                 runtime,
                 progress=self._make_progress(job_id),
                 cancel_event=event,
+                choices=choices,
             )
             if event.is_set():
                 status = JobStatus.CANCELLED.value

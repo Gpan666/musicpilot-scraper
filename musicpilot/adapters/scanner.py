@@ -124,6 +124,38 @@ def probe_file(path: Path, *, root: Path | None = None) -> AudioFile:
     )
 
 
+def embedded_cover(path: Path) -> tuple[bytes, str] | None:
+    """Extract the first embedded picture as decoded ``(bytes, mime)``."""
+    try:
+        audio = MutagenFile(str(path))
+    except Exception:  # noqa: BLE001 - corrupt files must not break the UI
+        return None
+    if audio is None:
+        return None
+
+    pictures = getattr(audio, "pictures", None)  # FLAC
+    if pictures:
+        data = bytes(getattr(pictures[0], "data", b"") or b"")
+        if data:
+            return data, _mime_of(pictures[0])
+
+    for key in ("APIC:", "APIC", "covr"):  # ID3 / MP4
+        value = _safe_get(audio, key)
+        if value is None:
+            continue
+        frame = value[0] if isinstance(value, list) and value else value
+        data = getattr(frame, "data", frame)
+        if isinstance(data, bytes) and data:
+            return data, _mime_of(frame)
+    return None
+
+
+def _mime_of(frame: Any) -> str:
+    mime = str(getattr(frame, "mime", "") or getattr(frame, "imageformat", "") or "")
+    mime = mime.split(";")[0].strip().lower()
+    return mime if mime.startswith("image/") else "image/jpeg"
+
+
 def scan_files(
     root: Path,
     *,

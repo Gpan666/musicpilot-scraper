@@ -185,3 +185,10 @@ class MetadataService:
         if isinstance(provider, NetEaseProvider):
             return await provider.lyrics(meta.external_id)
         return None
+
+
+async def cover_embedding(path: Any) -> tuple[bytes, str] | None:
+    """Embedded artwork of a source file, used as a preview fallback."""
+    from musicpilot.adapters.scanner import embedded_cover
+
+    return await asyncio.to_thread(embedded_cover, path)
