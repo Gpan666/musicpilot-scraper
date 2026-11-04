@@ -121,6 +121,8 @@ class ScraperService:
 
         done, failed, skipped = 0, 0, 0
         progress(0, 0, 0, "", f"已扫描到 {len(files)} 个文件")
+        if request.kind is JobKind.AUTO and len(files) > 1:
+            self.store.update_progress(job_id, total=len(files))
         chunk_size = max(1, min(self.base.scan_concurrency, 8))
         for offset in range(0, len(files), chunk_size):
             if cancel_event.is_set():

@@ -11,6 +11,7 @@ from typing import Any
 class JobKind(StrEnum):
     PREVIEW = "preview"
     SCRAPE = "scrape"
+    AUTO = "auto"
 
 
 class JobStatus(StrEnum):
@@ -137,6 +138,8 @@ class JobSnapshot:
     message: str = ""
     dry_run: bool = False
     current_file: str = ""
+    title: str = ""
+    auto: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     message TEXT NOT NULL DEFAULT '',
     dry_run INTEGER NOT NULL DEFAULT 0,
     current_file TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
     options TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS job_items (
@@ -77,6 +78,15 @@ CREATE TABLE IF NOT EXISTS users (
 """
 
 
+def _add_columns(
+    connection: sqlite3.Connection, table: str, needed: dict[str, str]
+) -> None:
+    columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+    for name, ddl in needed.items():
+        if name not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 class Store:
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
@@ -101,21 +111,20 @@ class Store:
     @staticmethod
     def _migrate(connection: sqlite3.Connection) -> None:
         """Additive migrations for databases created by earlier versions."""
-        columns = {
-            row["name"] for row in connection.execute("PRAGMA table_info(job_items)")
-        }
-        needed = {
-            "local_title": "TEXT NOT NULL DEFAULT ''",
-            "local_artist": "TEXT",
-            "local_album": "TEXT",
-            "local_year": "INTEGER",
-            "local_track_number": "INTEGER",
-            "cover_url": "TEXT",
-            "candidates": "TEXT NOT NULL DEFAULT '[]'",
-        }
-        for name, ddl in needed.items():
-            if name not in columns:
-                connection.execute(f"ALTER TABLE job_items ADD COLUMN {name} {ddl}")
+        _add_columns(
+            connection,
+            "job_items",
+            {
+                "local_title": "TEXT NOT NULL DEFAULT ''",
+                "local_artist": "TEXT",
+                "local_album": "TEXT",
+                "local_year": "INTEGER",
+                "local_track_number": "INTEGER",
+                "cover_url": "TEXT",
+                "candidates": "TEXT NOT NULL DEFAULT '[]'",
+            },
+        )
+        _add_columns(connection, "jobs", {"title": "TEXT NOT NULL DEFAULT ''"})
 
     # ---- settings -------------------------------------------------------
     def get_overrides(self) -> dict[str, Any]:
@@ -147,13 +156,14 @@ class Store:
                 """
                 INSERT INTO jobs (
                     id, kind, status, total, done, failed, skipped, created_at,
-                    processed, finished_at, message, dry_run, current_file, options
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    processed, finished_at, message, dry_run, current_file, title, options
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     status=excluded.status, total=excluded.total, done=excluded.done,
                     failed=excluded.failed, skipped=excluded.skipped,
                     processed=excluded.processed, finished_at=excluded.finished_at,
-                    message=excluded.message, current_file=excluded.current_file
+                    message=excluded.message, current_file=excluded.current_file,
+                    title=excluded.title
                 """,
                 (
                     job.id,
@@ -169,6 +179,7 @@ class Store:
                     job.message,
                     int(job.dry_run),
                     job.current_file,
+                    job.title,
                     json.dumps(options or {}, ensure_ascii=False),
                 ),
             )
@@ -184,6 +195,7 @@ class Store:
             "finished_at",
             "message",
             "current_file",
+            "title",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
