@@ -1,0 +1,37 @@
+services:
+  musicpilot:
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: musicpilot-scraper:local
+    container_name: musicpilot-scraper
+    environment:
+      TZ: Asia/Shanghai
+      MP_LOG_LEVEL: ${MP_LOG_LEVEL:-INFO}
+      MP_ADMIN_USERNAME: ${MP_ADMIN_USERNAME:-admin}
+      # 留空表示不启用登录认证（仅建议可信内网）；公网访问务必设置强密码并配 HTTPS 反代
+      MP_ADMIN_PASSWORD: ${MP_ADMIN_PASSWORD:-}
+      MP_SESSION_SECRET: ${MP_SESSION_SECRET:-}
+      MP_SOURCE_DIR: /media/downloads
+      MP_LIBRARY_DIR: /media/music
+      MP_DATA_DIR: /data
+      MP_TRANSFER_MODE: ${MP_TRANSFER_MODE:-copy}
+      # 命名模板含大括号，不做 compose 插值；请在 Web UI「刮削设置」中修改（保存到 /data）
+      MP_CONFLICT_POLICY: ${MP_CONFLICT_POLICY:-rename}
+      MP_SYMLINK_RELATIVE: ${MP_SYMLINK_RELATIVE:-true}
+      MP_WRITE_TAGS: ${MP_WRITE_TAGS:-true}
+      MP_EMBED_COVER: ${MP_EMBED_COVER:-true}
+      MP_WRITE_LYRICS: ${MP_WRITE_LYRICS:-false}
+      MP_METADATA_SOURCES: ${MP_METADATA_SOURCES:-local,musicbrainz,netease}
+      MP_CONFIDENCE_THRESHOLD: ${MP_CONFIDENCE_THRESHOLD:-0.62}
+      MP_MUSICBRAINZ_USER_AGENT: "${MP_MUSICBRAINZ_USER_AGENT:-MusicPilot-Scraper/2.0 (self-hosted personal use)}"
+      MP_HTTP_PROXY: ${MP_HTTP_PROXY:-}
+    ports:
+      - "${MP_HTTP_PORT:-8000}:8000"
+    volumes:
+      # 关键：把「源目录 + 音乐库」所在的同一个宿主机父目录一次性挂载。
+      # 分别挂载两个子目录会变成两个挂载点，硬链接将不可用。
+      - ${MP_HOST_MEDIA_PATH:-./media}:/media
+      - ./data:/data
+    restart: unless-stopped

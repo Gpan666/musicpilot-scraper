@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MusicPilot Scraper</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script>
+    (function () {
+      var saved = localStorage.getItem('mp-theme') || 'dark';
+      var theme = saved === 'auto'
+        ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+        : saved;
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="/logo.svg" alt="MusicPilot" class="brand-mark">
+        <div>
+          <div class="brand-title">MusicPilot</div>
+          <div class="brand-sub">Scraper <span id="version"></span></div>
+        </div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-foot">
+        <div id="auth-hint" class="hint"></div>
+        <div class="small">仅做音乐刮削与整理 · GPL-3.0</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">概览</h1>
+          <p id="page-subtitle" class="subtitle"></p>
+        </div>
+        <div class="top-actions">
+          <span id="job-pill" class="pill hidden"></span>
+          <button id="theme-toggle" class="icon-btn" title="切换夜间 / 日间模式" aria-label="切换主题">
+            <span id="theme-icon">☀</span>
+          </button>
+          <button id="logout-btn" class="ghost-btn hidden">退出登录</button>
+        </div>
+      </header>
+
+      <div id="banner" class="banner hidden"></div>
+      <div id="page" class="page"></div>
+    </main>
+  </div>
+
+  <div id="login-overlay" class="overlay hidden">
+    <form id="login-form" class="dialog login-dialog">
+      <h2>登录 MusicPilot</h2>
+      <p class="muted">此实例启用了登录认证。</p>
+      <label>用户名<input id="login-user" autocomplete="username" value="admin"></label>
+      <label>密码<input id="login-pass" type="password" autocomplete="current-password"></label>
+      <div id="login-error" class="error"></div>
+      <button class="primary-btn" type="submit">登录</button>
+    </form>
+  </div>
+
+  <div id="modal" class="overlay hidden">
+    <div class="dialog wide-dialog">
+      <div class="dialog-head">
+        <h2 id="modal-title">详情</h2>
+        <button id="modal-close" class="icon-btn" aria-label="关闭">✕</button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

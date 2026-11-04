@@ -1,0 +1,166 @@
+"""Single-at-a-time background job queue with cancellation and persisted progress."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import uuid
+from dataclasses import replace
+from typing import Any
+
+from musicpilot.adapters.store import Store
+from musicpilot.domain.models import JobSnapshot, JobStatus
+from musicpilot.services.scraper import JobRequest, ScraperService
+from musicpilot.services.settings_service import SettingsService
+
+
+class JobConflict(RuntimeError):
+    pass
+
+
+class JobManager:
+    def __init__(
+        self,
+        store: Store,
+        scraper: ScraperService,
+        settings: SettingsService,
+    ) -> None:
+        self.store = store
+        self.scraper = scraper
+        self.settings = settings
+        self._jobs: dict[str, JobSnapshot] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._events: dict[str, asyncio.Event] = {}
+        self._active_id: str | None = None
+
+    def start(self, request: JobRequest) -> JobSnapshot:
+        if self._active_id is not None:
+            active = self._jobs.get(self._active_id)
+            if active and active.status in {JobStatus.PENDING.value, JobStatus.RUNNING.value}:
+                raise JobConflict(f"已有任务 {active.id} 正在运行，请等待完成或先取消")
+        runtime = self.settings.get()
+        job = JobSnapshot(
+            id=uuid.uuid4().hex[:12],
+            kind=request.kind.value,
+            status=JobStatus.PENDING.value,
+            total=0,
+            done=0,
+            failed=0,
+            skipped=0,
+            created_at=time.time(),
+            dry_run=request.dry_run,
+            message="任务已排队",
+        )
+        self._jobs[job.id] = job
+        self._events[job.id] = asyncio.Event()
+        self.store.save_job(job, request.as_dict())
+        self._active_id = job.id
+        self._tasks[job.id] = asyncio.create_task(self._run(job.id, request, runtime))
+        return job
+
+    def _make_progress(self, job_id: str) -> Any:
+        def update(processed: int, failed: int, skipped: int, current: str, message: str) -> None:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            done = max(0, processed - failed - skipped)
+            updated = replace(
+                job,
+                processed=processed,
+                done=done,
+                failed=failed,
+                skipped=skipped,
+                current_file=current,
+                message=message,
+            )
+            self._jobs[job_id] = updated
+            self.store.update_progress(
+                job_id,
+                processed=processed,
+                done=done,
+                failed=failed,
+                skipped=skipped,
+                current_file=current,
+                message=message,
+            )
+
+        return update
+
+    async def _run(self, job_id: str, request: JobRequest, runtime: Any) -> None:
+        event = self._events[job_id]
+        self._jobs[job_id] = replace(
+            self._jobs[job_id], status=JobStatus.RUNNING.value, message="正在扫描与刮削"
+        )
+        self.store.update_progress(job_id, status=JobStatus.RUNNING.value, message="正在扫描与刮削")
+        status = JobStatus.COMPLETED.value
+        message = "任务完成"
+        try:
+            warnings = await self.scraper.execute(
+                job_id,
+                request,
+                runtime,
+                progress=self._make_progress(job_id),
+                cancel_event=event,
+            )
+            if event.is_set():
+                status = JobStatus.CANCELLED.value
+                message = "任务已取消"
+            elif warnings:
+                message = "；".join(warnings[:5])
+        except asyncio.CancelledError:
+            status = JobStatus.CANCELLED.value
+            message = "任务已取消"
+        except Exception as exc:  # noqa: BLE001 - surface the failure in the job record
+            status = JobStatus.FAILED.value
+            message = f"任务失败：{type(exc).__name__}: {exc}"
+        finally:
+            previous = self._jobs.get(job_id)
+            if previous is not None:
+                final = replace(
+                    previous,
+                    status=status,
+                    finished_at=time.time(),
+                    message=message,
+                )
+                self._jobs[job_id] = final
+                self.store.save_job(final)
+            self._tasks.pop(job_id, None)
+            self._events.pop(job_id, None)
+            if self._active_id == job_id:
+                self._active_id = None
+
+    def get(self, job_id: str) -> dict[str, Any] | None:
+        job = self._jobs.get(job_id)
+        if job is not None:
+            return job.as_dict()
+        return self.store.get_job(job_id)
+
+    def list(self, limit: int = 30) -> list[dict[str, Any]]:
+        rows = self.store.list_jobs(limit)
+        for index, row in enumerate(rows):
+            live = self._jobs.get(str(row["id"]))
+            if live is not None:
+                rows[index] = {**row, **live.as_dict()}
+        return rows
+
+    def items(self, job_id: str, *, limit: int = 500, offset: int = 0) -> list[dict[str, Any]]:
+        return self.store.list_items(job_id, limit=limit, offset=offset)
+
+    def cancel(self, job_id: str) -> bool:
+        event = self._events.get(job_id)
+        if event is None:
+            return False
+        event.set()
+        return True
+
+    async def shutdown(self) -> None:
+        for event in self._events.values():
+            event.set()
+        tasks = list(self._tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._events.clear()
+        self._active_id = None
