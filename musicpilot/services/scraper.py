@@ -13,11 +13,39 @@ from musicpilot.adapters.scanner import probe_file, scan_files
 from musicpilot.adapters.store import Store
 from musicpilot.adapters.tags import apply_tags
 from musicpilot.config import RuntimeSettings, Settings
-from musicpilot.domain.models import ItemStatus, JobKind, PlanItem
+from musicpilot.domain.models import ItemStatus, JobKind, PlanItem, TrackMetadata
 from musicpilot.domain.naming import target_path
 from musicpilot.domain.transfer import TransferMode, transfer
 
 ProgressCallback = Callable[[int, int, int, str, str], None]
+
+# Human choices made on the preview page: {source path: metadata overrides}.
+ChoiceMap = dict[str, dict[str, Any]]
+
+_PICK_FIELDS = ("title", "artist", "album", "year", "track_number")
+
+
+def _picked_metadata(choice: dict[str, Any]) -> TrackMetadata:
+    """Turn a raw override payload into trusted ``TrackMetadata``."""
+    values: dict[str, Any] = {}
+    for name in _PICK_FIELDS:
+        value = choice.get(name)
+        if value is None:
+            continue
+        if name in {"year", "track_number"}:
+            try:
+                values[name] = int(value) if str(value).strip() else None
+            except (TypeError, ValueError):
+                values[name] = None
+        else:
+            values[name] = str(value).strip() or None
+    values.setdefault("title", "")
+    source = str(choice.get("source") or "manual").strip() or "manual"
+    values["source"] = source
+    values["external_id"] = str(choice.get("external_id") or "") or None
+    values["album_artist"] = values.get("artist")
+    values["cover_url"] = str(choice.get("cover_url") or "") or None
+    return TrackMetadata(**values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +91,7 @@ class ScraperService:
         *,
         progress: ProgressCallback,
         cancel_event: asyncio.Event,
+        choices: ChoiceMap | None = None,
     ) -> list[str]:
         """Run the whole batch; return human-readable warnings for the job message."""
         source_root = runtime.source_root
@@ -100,7 +129,13 @@ class ScraperService:
             chunk = files[offset : offset + chunk_size]
             results = await asyncio.gather(
                 *(
-                    self._process(audio, request, runtime, library_root)
+                    self._process(
+                        audio,
+                        request,
+                        runtime,
+                        library_root,
+                        (choices or {}).get(audio.path),
+                    )
                     for audio in chunk
                 ),
                 return_exceptions=True,
@@ -168,10 +203,22 @@ class ScraperService:
         request: JobRequest,
         runtime: RuntimeSettings,
         library_root: Path,
+        choice: dict[str, Any] | None = None,
     ) -> ProcessResult:
         mode: TransferMode = runtime.transfer_mode
         resolution = await self.metadata.resolve(audio, runtime)
         meta = resolution.metadata
+        if choice:
+            meta = replace(_picked_metadata(choice), lyrics=meta.lyrics)
+            resolution = replace(
+                resolution,
+                metadata=meta,
+                confidence=1.0,
+                needs_review=False,
+                reason=f"按预览页的人工选择写入（候选来自 {meta.source}）",
+                source=meta.source,
+            )
+        local = audio.local_metadata
         try:
             destination = target_path(
                 library_root,
@@ -206,6 +253,13 @@ class ScraperService:
             album=meta.album,
             year=meta.year,
             track_number=meta.track_number,
+            local_title=local.title,
+            local_artist=local.artist,
+            local_album=local.album,
+            local_year=local.year,
+            local_track_number=local.track_number,
+            cover_url=meta.cover_url,
+            candidates=[item.as_dict() for item in resolution.candidates],
         )
 
         if request.dry_run:

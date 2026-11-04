@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS job_items (
     track_number INTEGER,
     detail TEXT NOT NULL DEFAULT '',
     link_target TEXT,
+    local_title TEXT NOT NULL DEFAULT '',
+    local_artist TEXT,
+    local_album TEXT,
+    local_year INTEGER,
+    local_track_number INTEGER,
+    cover_url TEXT,
+    candidates TEXT NOT NULL DEFAULT '[]',
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_job_items_job ON job_items(job_id, id);
@@ -88,7 +95,27 @@ class Store:
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(_SCHEMA)
+            self._migrate(connection)
         self._initialized = True
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        """Additive migrations for databases created by earlier versions."""
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(job_items)")
+        }
+        needed = {
+            "local_title": "TEXT NOT NULL DEFAULT ''",
+            "local_artist": "TEXT",
+            "local_album": "TEXT",
+            "local_year": "INTEGER",
+            "local_track_number": "INTEGER",
+            "cover_url": "TEXT",
+            "candidates": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for name, ddl in needed.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE job_items ADD COLUMN {name} {ddl}")
 
     # ---- settings -------------------------------------------------------
     def get_overrides(self) -> dict[str, Any]:
@@ -209,6 +236,13 @@ class Store:
                     item.track_number,
                     item.detail,
                     item.link_target,
+                    item.local_title,
+                    item.local_artist,
+                    item.local_album,
+                    item.local_year,
+                    item.local_track_number,
+                    item.cover_url,
+                    json.dumps(item.candidates, ensure_ascii=False),
                     now,
                 )
             )
@@ -219,8 +253,10 @@ class Store:
                 """
                 INSERT INTO job_items (
                     job_id, source, target, mode, status, confidence, source_name,
-                    title, artist, album, year, track_number, detail, link_target, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    title, artist, album, year, track_number, detail, link_target,
+                    local_title, local_artist, local_album, local_year,
+                    local_track_number, cover_url, candidates, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -231,7 +267,16 @@ class Store:
                 "SELECT * FROM job_items WHERE job_id=? ORDER BY id LIMIT ? OFFSET ?",
                 (job_id, limit, offset),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [self._decode_item(dict(row)) for row in rows]
+
+    @staticmethod
+    def _decode_item(row: dict[str, Any]) -> dict[str, Any]:
+        raw = row.get("candidates")
+        try:
+            row["candidates"] = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except json.JSONDecodeError:
+            row["candidates"] = []
+        return row
 
     def item_counts(self, job_id: str) -> dict[str, int]:
         with self._connect() as connection:

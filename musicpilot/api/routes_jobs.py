@@ -29,8 +29,13 @@ async def create_job(
         organize=payload.organize,
         skip_low_confidence=payload.skip_low_confidence,
     )
+    choices = (
+        {}
+        if dry_run
+        else {path: item.model_dump() for path, item in payload.choices.items()}
+    )
     try:
-        job = context.jobs.start(request)
+        job = context.jobs.start(request, choices)
     except JobConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return job.as_dict()
