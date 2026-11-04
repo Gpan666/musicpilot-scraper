@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     http_proxy: str = ""
     request_timeout: float = 20.0
 
+    browsable_roots: str = "/media"
     scan_extensions: str = ".mp3,.flac,.wav,.m4a,.aac,.ogg,.opus,.aiff,.aif,.dsf,.dff,.wma,.ape"
     exclude_dirs: str = "@eaDir,.git,.thumbnails,System Volume Information"
     max_scan_files: int = 5000
@@ -80,6 +81,14 @@ class Settings(BaseSettings):
     def excluded_directories(self) -> frozenset[str]:
         return frozenset(
             item.strip() for item in self.exclude_dirs.split(",") if item.strip()
+        )
+
+    @property
+    def browsable_paths(self) -> tuple[Path, ...]:
+        return tuple(
+            Path(item.strip())
+            for item in self.browsable_roots.split(",")
+            if item.strip()
         )
 
     @property

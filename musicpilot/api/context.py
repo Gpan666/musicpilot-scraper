@@ -67,25 +67,30 @@ def session_token(username: str, secret: str) -> str:
     return f"{username}.{issued}.{signature}"
 
 
-def verify_session(token: str | None, secret: str, username: str) -> bool:
+def session_username(token: str | None, secret: str) -> str | None:
+    """Return the signed-in username from a valid session token, else ``None``."""
     import hashlib
     import hmac
 
     if not token:
-        return False
+        return None
     parts = token.split(".")
     if len(parts) != 3:
-        return False
+        return None
     candidate, issued, signature = parts
-    if candidate != username:
-        return False
+    if not candidate:
+        return None
     try:
         age = time.time() - int(issued)
     except ValueError:
-        return False
+        return None
     if age < 0 or age > SESSION_MAX_AGE:
-        return False
+        return None
     expected = hmac.new(
         secret.encode(), f"{candidate}.{issued}".encode(), hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    return candidate if hmac.compare_digest(signature, expected) else None
+
+
+def verify_session(token: str | None, secret: str, username: str) -> bool:
+    return session_username(token, secret) == username

@@ -16,11 +16,12 @@ def test_health_and_docs(client: TestClient) -> None:
     assert "version" in about
 
 
-def test_auth_disabled_by_default(client: TestClient) -> None:
+def test_session_is_authenticated(client: TestClient) -> None:
     status = client.get("/api/auth/status").json()
-    assert status["enabled"] is False
+    assert status["enabled"] is True
     assert status["authenticated"] is True
-    assert "未启用" in status["hint"]
+    assert status["username"] == "tester"
+    assert status["needs_setup"] is False
 
 
 def test_transfer_mode_documentation(client: TestClient) -> None:

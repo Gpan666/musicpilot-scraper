@@ -10,12 +10,13 @@ services:
       TZ: Asia/Shanghai
       MP_LOG_LEVEL: ${MP_LOG_LEVEL:-INFO}
       MP_ADMIN_USERNAME: ${MP_ADMIN_USERNAME:-admin}
-      # 留空表示不启用登录认证（仅建议可信内网）；公网访问务必设置强密码并配 HTTPS 反代
+      # 登录认证始终开启；首次访问在网页上注册管理员账号。此项仅用于旧部署引导
       MP_ADMIN_PASSWORD: ${MP_ADMIN_PASSWORD:-}
       MP_SESSION_SECRET: ${MP_SESSION_SECRET:-}
       MP_SOURCE_DIR: /media/downloads
       MP_LIBRARY_DIR: /media/music
       MP_DATA_DIR: /data
+      MP_BROWSABLE_ROOTS: ${MP_BROWSABLE_ROOTS:-/media}
       MP_TRANSFER_MODE: ${MP_TRANSFER_MODE:-copy}
       # 命名模板含大括号，不做 compose 插值；请在 Web UI「刮削设置」中修改（保存到 /data）
       MP_CONFLICT_POLICY: ${MP_CONFLICT_POLICY:-rename}
@@ -30,8 +31,8 @@ services:
     ports:
       - "${MP_HTTP_PORT:-8000}:8000"
     volumes:
-      # 关键：把「源目录 + 音乐库」所在的同一个宿主机父目录一次性挂载。
-      # 分别挂载两个子目录会变成两个挂载点，硬链接将不可用。
+      # 关键：把「源目录 + 音乐库」所在的同一个宿主机父目录一次性挂载，最稳妥。
+      # 硬链接能否用取决于容器内两者的 st_dev 是否相同，进 Web UI 跑「写入自检」可实测。
       - ${MP_HOST_MEDIA_PATH:-./media}:/media
       - ./data:/data
     restart: unless-stopped

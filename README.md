@@ -6,7 +6,7 @@
 
 **只做一件事：把一堆音频文件刮削成整齐的音乐库。**
 
-扫描源目录 → 读取现有标签与文件名 → 查询在线曲库补全元数据 → 把标签写回文件 → 按命名模板转移到音乐库。支持 **复制 / 移动 / 硬链接 / 软链接** 四种转移方式，Docker 一键部署，自带 Web 界面（含夜间模式）、整理计划预览、任务进度与 CSV 报告。
+扫描源目录 → 读取现有标签与文件名 → 查询在线曲库补全元数据 → 把标签写回文件 → 按命名模板转移到音乐库。支持 **复制 / 移动 / 硬链接 / 软链接** 四种转移方式，Docker 一键部署，自带 Miuix 风格 Web 界面（MiSans 可变字体、夜间模式、文件夹选择器、注册 / 登录）、整理计划预览、任务进度与 CSV 报告。
 
 > 本项目是 [lzcer/MusicPilot](https://github.com/lzcer/MusicPilot) 的**重构精简版**：删除了 PT 站点索引、种子搜索、下载器、歌单同步、媒体服务器刷新与 Telegram 机器人，只保留「刮削 + 整理」这条主线，并把单文件巨石拆成分层模块。详见 [与上游的差异](#2-与上游的差异)。
 
@@ -44,7 +44,7 @@
 | 前端结构 | `App.vue` 9,747 行单文件 | 原生单页 `web/`（约 1,300 行），**无 Node 构建阶段**，镜像更小 |
 | 依赖 | 20+（SQLAlchemy、alembic、aiogram、apscheduler、bs4…） | 6 个（FastAPI / uvicorn / httpx / mutagen / pydantic / pydantic-settings），SQLite 用标准库 |
 | 数据库 | PostgreSQL + SQLite 双轨、15 个 alembic 迁移 + 手写 ALTER | 单 SQLite，4 张表，启动即建，无迁移框架 |
-| 认证 | 默认 `admin/musicpilot` 弱口令 | 默认**不启用**认证并明确告警；设置密码后才开启会话 + 登录限速；无默认弱口令 |
+| 认证 | 默认 `admin/musicpilot` 弱口令 | 首次启动注册管理员账号；PBKDF2 加盐存 SQLite、HMAC 会话 Cookie、登录限速；无默认口令 |
 | 新增能力 | — | 转移方式四选一、写入自检、dry-run 计划、任务进度/取消、CSV 报告、置信度阈值、命名模板预设、夜间/日间/跟随系统主题 |
 
 许可证：上游为 **GPL-3.0**，本仓库保留原 [`LICENSE`](LICENSE) 全文，并继续以 GPL-3.0-or-later 发布。原作者与上游项目的版权声明一并保留；本重构版的全部修改见本文件与 git 历史。
@@ -85,7 +85,7 @@ volumes:
   - ./data:/data                # SQLite 数据库与会话密钥
 ```
 
-> ⚠️ 不要写成 `- /volume1/music:/music` + `- /volume1/downloads:/downloads`。即使两块目录在同一块物理硬盘、同一个存储池、同一个 NAS 卷，Docker 也会把它们视为**两个挂载点**，`os.link` 必然报 `EXDEV`，硬链接不可用。Btrfs 子卷、不同分区、网络共享同理。
+> ⚠️ 建议不要写成 `- /volume1/music:/music` + `- /volume1/downloads:/downloads`。硬链接能否建立的唯一判据是容器里两个目录的 `st_dev` 是否相同（`os.stat().st_dev`）。Docker 的 bind mount 会保留宿主机底层文件系统的 `st_dev`：两个目录在宿主机同一文件系统时，分别挂载通常也相同；但若其中一个属于另一个存储池、分区、Btrfs 子卷或独立挂载点，则无论怎么映射都不会相同，`os.link` 会报 `EXDEV`。挂共同父目录是最稳妥的写法；进 Web UI「概览 → 运行写入自检」可以实测确认。
 
 ### 4.2 启动
 
@@ -97,7 +97,9 @@ mkdir -p media/downloads media/music data
 docker compose up -d --build
 ```
 
-打开 `http://<NAS_IP>:8000`。
+打开 `http://<NAS_IP>:8000`。**首次访问会进入「创建管理员账号」页面**：设置用户名与密码（至少 8 位）后自动登录；之后打开就是登录页。账号存在 SQLite 里，重启容器不丢失。管理员还可以在「刮削设置 → 账户」里添加其他账号。登录页与所有受保护的 API 在未登录时均不可访问，详见第 8 节。
+
+> 从旧版本升级且设置过 `MP_ADMIN_PASSWORD` 时，启动会自动把该账号迁移成第一个管理员（用户名取 `MP_ADMIN_USERNAME`），无需重新注册。
 
 `.env` 中 `MP_HOST_MEDIA_PATH=/volume1/media` 用于 compose 的卷映射（不设置时默认为 `./media`）。其余 `MP_*` 变量中，compose 已显式引用的会生效；**命名模板含 `{artist}` 等大括号，不做 compose 插值**，请在 Web UI「刮削设置」里修改（保存到 `/data/musicpilot.db`，重启不丢失）。源码方式直接运行时，`.env` 中的全部变量都生效。
 
@@ -107,8 +109,9 @@ docker compose up -d --build
 | --- | --- | --- |
 | `MP_HOST_MEDIA_PATH` | `./media` | 宿主机上包含 `downloads` + `music` 的父目录 |
 | `MP_HTTP_PORT` | `8000` | Web 端口 |
-| `MP_ADMIN_PASSWORD` | 空 | **留空则不启用认证**；设置后启用登录 |
+| `MP_ADMIN_PASSWORD` | 空 | 可选：仅用于把旧部署引导成第一个账号；全新部署请在网页上注册 |
 | `MP_SESSION_SECRET` | 自动生成 | 会话签名密钥，留空时生成并保存在 `/data/session.secret` |
+| `MP_BROWSABLE_ROOTS` | `/media` | 目录选择器允许浏览的容器内根目录，逗号分隔；当前源/库目录的父目录会自动加入 |
 | `MP_TRANSFER_MODE` | `copy` | `copy` / `move` / `hardlink` / `symlink` |
 | `MP_METADATA_SOURCES` | `local,musicbrainz,netease` | 元数据源，逗号分隔 |
 | `MP_CONFIDENCE_THRESHOLD` | `0.62` | 采用在线结果的最低匹配度 |
@@ -260,13 +263,19 @@ Web UI 内置 5 套预设并实时显示示例。模板会自动清洗 `<>:"/\|?
 
 ---
 
-## 8. Web 界面与夜间模式
+## 8. Web 界面、字体与登录
 
 六个页面：概览（目录状态 + 四种方式可用性自检）、源文件、整理计划、任务记录、刮削设置、转移方式说明。
 
-**主题**：默认**夜间模式**；右上角按钮在夜间/日间之间一键切换，设置页还可选择「跟随系统」（按 `prefers-color-scheme` 自动切换）。选择保存在浏览器 `localStorage`，刷新不丢失，页面加载时先应用主题，避免白屏闪烁。
+**视觉规范**：界面按 [Miuix](https://github.com/compose-miuix-ui/miuix) 的 `lightColorScheme()` / `darkColorScheme()` 重做——亮色主色 `#3482FF`、暗色主色 `#277AF7`，暗色背景 `#242424` / 卡片 `#2D2D2D`，大圆角卡片分组、胶囊按钮、MIUI 风格开关；文字层级取自其 `TextStyles.kt`（32 / 24 / 20 / 18 / 17 / 16 / 14 / 13 / 11）。窄屏下侧栏会变成横向导航，表格与卡片自动改单列。
 
-**认证**：`MP_ADMIN_PASSWORD` 为空时不启用登录（界面会显示告警，请只在可信内网使用）；设置后启用 HttpOnly 会话 Cookie（HMAC 签名、7 天有效）、登录失败限速，公网访问请再套 HTTPS 反向代理。
+**字体**：使用小米 [MiSans](https://hyperos.mi.com/font/) 的可变字体版本（`misans@5.0.0` 的 `MiSansVF.min.css`，经 jsDelivr 加载，未打包进仓库）。字号用 `clamp()` 随视口宽度自适应，字重通过 `wght` 轴（150–700）按文字角色分配，并在窄屏自动微调；字体不可达时回退到系统字体，且 CSS 以非阻塞方式加载，不会白屏。
+
+**目录选择器**：「刮削设置 → 目录」里源目录和音乐库都有「浏览…」按钮，打开一个带面包屑、上级、子目录列表的文件夹选择框，点选即回填路径，不用手动输入。后端 `GET /api/files/directories` 只允许浏览 `MP_BROWSABLE_ROOTS`（默认 `/media`）以及当前源/库目录的父目录，会拒绝相对路径、越界目录和逃逸的符号链接。
+
+**登录与注册**：认证始终开启。全新数据库首次打开会显示「创建管理员账号」，注册成功后自动登录；之后为登录页。密码以 PBKDF2-HMAC-SHA256（20 万轮、每账号随机盐）保存在 SQLite，会话是 HMAC 签名的 HttpOnly Cookie（7 天），登录失败按 IP 限速。管理员可在「刮削设置 → 账户」里添加更多账号；匿名注册在第一个账号创建后即关闭。公网访问请再套 HTTPS 反向代理。
+
+**主题**：默认**夜间模式**；右上角按钮在夜间/日间之间一键切换，设置页还可选择「跟随系统」（按 `prefers-color-scheme` 自动切换）。选择保存在浏览器 `localStorage`，刷新不丢失，页面加载时先应用主题，避免白屏闪烁。
 
 ---
 
@@ -275,12 +284,14 @@ Web UI 内置 5 套预设并实时显示示例。模板会自动清洗 `<>:"/\|?
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查（公开，Docker HEALTHCHECK 用） |
-| GET/POST | `/api/auth/status` `/login` `/logout` | 登录状态与会话 |
+| GET | `/api/auth/status` | 登录状态、`needs_setup`（是否需要先注册） |
+| POST | `/api/auth/register` `/login` `/logout` | 首用户注册（之后限管理员）、登录、退出 |
 | GET | `/api/about` `/api/dashboard` | 版本、目录状态、能力、最近任务 |
 | GET | `/api/transfer-modes` | **四种方式的完整说明**（UI 与文档同源） |
 | GET/POST | `/api/system/capabilities` | 只读检查 / 写入自检 |
 | GET/PUT | `/api/settings` | 读取 / 修改运行时设置 |
 | GET | `/api/files` | 扫描源目录 |
+| GET | `/api/files/directories?path=...` | 目录选择器用的子目录列表（限定在允许根内） |
 | POST | `/api/files/detail` | 单文件标签、推断与预览目标路径 |
 | POST | `/api/jobs` | 创建预览或刮削任务（同一时刻只允许一个） |
 | GET | `/api/jobs` `/api/jobs/{id}` `/api/jobs/{id}/items` | 任务与明细 |
@@ -311,7 +322,7 @@ python -m ruff check musicpilot tests
 uvicorn musicpilot.app:create_app --factory --reload
 ```
 
-测试覆盖：四种转移方式的真实行为（含 inode 共享、相对符号链接、冲突策略、失败不删源）、命名模板与路径遍历防护、文件名解析与置信度评分、API 端到端（临时目录 + 关闭在线源）。前端是静态文件，无需 `npm install`；可用 `node --check web/app.js` 检查语法。
+测试覆盖：四种转移方式的真实行为（含 inode 共享、相对符号链接、冲突策略、失败不删源）、命名模板与路径遍历防护、文件名解析与置信度评分、注册/登录/会话保护、目录浏览的越界防护、API 端到端（临时目录 + 关闭在线源）。前端是静态文件，无需 `npm install`；可用 `node --check web/app.js` 检查语法。
 
 代码结构：
 
@@ -322,8 +333,8 @@ musicpilot/
 ├── domain/                 # 纯规则：transfer / naming / matcher / models
 ├── adapters/               # scanner / tags / store / metadata providers
 ├── services/               # settings / jobs / scraper（编排）
-└── api/                    # auth + 4 个按域拆分的 router + context
-web/                        # index.html / app.js / style.css（含双主题）
+└── api/                    # auth（注册/登录/会话）+ 4 个按域拆分的 router + context
+web/                        # index.html / app.js / style.css（Miuix 风格 + MiSans VF + 双主题 + 目录选择器）
 tests/
 ```
 
@@ -343,4 +354,6 @@ tests/
 
 - [lzcer/MusicPilot](https://github.com/lzcer/MusicPilot) —— 原始项目，本重构版的数据模型、刮削思路与部分标签写入实践源自它。
 - [MoviePilot](https://github.com/jxxghp/MoviePilot)、[musicdl](https://github.com/CharlesPikachu/musicdl)、[Jackett](https://github.com/Jackett/Jackett) —— 上游致谢的灵感来源。
+- [Miuix](https://github.com/compose-miuix-ui/miuix) —— 本项目的界面配色、圆角卡片分组与文字层级参考它的 `Colors.kt` / `TextStyles.kt`（Apache-2.0）。
+- **MiSans** —— 界面字体来自小米 MiSans（[字体官网](https://hyperos.mi.com/font/)），网页子集化与可变字体版本由 [dsrkafuu/misans](https://github.com/dsrkafuu/misans) 提供并经 jsDelivr 加载。按《MiSans 字体知识产权许可协议》要求，在此特别注明本项目使用了 MiSans 字体；字体文件未随本仓库分发。
 - FastAPI、mutagen、MusicBrainz、Cover Art Archive、Vue 生态的上游设计参考，以及 SQLite、Python、Docker 社区。
