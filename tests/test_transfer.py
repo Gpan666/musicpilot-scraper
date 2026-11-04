@@ -42,7 +42,7 @@ def test_hardlink_shares_inode_and_survives_source_delete(tmp_path: Path) -> Non
     source.write_bytes(b"payload")
     target = tmp_path / "out" / "song.flac"
     result = transfer(source, target, mode=TransferMode.HARDLINK)
-    if result.status == "failed" and "同一" in result.detail:
+    if result.status == "failed" and "挂载点" in result.detail:
         pytest.skip("platform/filesystem does not support hard links here")
     assert result.status == "transferred"
     assert os.stat(source).st_ino == os.stat(target).st_ino
@@ -144,7 +144,7 @@ def test_hardlink_refuses_different_devices(
     monkeypatch.setattr(module, "device_of", fake_device)
     result = transfer(source, target, mode=TransferMode.HARDLINK)
     assert result.status == "failed"
-    assert "同一" in result.detail
+    assert "挂载点" in result.detail
     assert source.exists()
     monkeypatch.setattr(module, "device_of", real_device_of)
 

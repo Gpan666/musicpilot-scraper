@@ -60,6 +60,34 @@ const fmtDuration = (seconds) => {
   return `${m}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 };
 const fileName = (path) => String(path || '').split(/[\\/]/).pop();
+const dirName = (path) => {
+  const parts = String(path || '').split(/[\\/]/);
+  parts.pop();
+  return parts.join('/') || '/';
+};
+/* 路径太长时保留首尾、中间省略，文件名与所在目录都不会被截掉。 */
+const shortPath = (path, head = 18, tail = 34) => {
+  const text = String(path || '');
+  if (text.length <= head + tail + 1) return text;
+  return `${text.slice(0, head)}…${text.slice(-tail)}`;
+};
+const MODE_LABELS = { copy: '复制', move: '移动', hardlink: '硬链接', symlink: '软链接' };
+const SOURCE_LABELS = { musicbrainz: 'MusicBrainz', netease: '网易云', local: '本地标签', manual: '手动填写' };
+const sourceLabel = (name) => SOURCE_LABELS[String(name || '').toLowerCase()] || String(name || '未知来源');
+const modeLabel = (mode) => MODE_LABELS[String(mode || '')] || '未知方式';
+const STATUS_LABELS = {
+  planned: '计划中', done: '成功', skipped: '跳过', failed: '失败', needs_review: '需确认',
+};
+/* 说明列只保留前两句（约 40 字），完整内容放悬停提示。 */
+function briefDetail(text, limit = 40) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value) return '—';
+  const parts = value.split('。').filter((part) => part.trim());
+  let head = parts.slice(0, 2).join('。') || value;
+  if (head.length > limit) head = `${head.slice(0, limit)}…`;
+  else if (parts.length) head += '。';
+  return head;
+}
 const jobKind = (job) => ({ preview: '预览', scrape: '刮削', auto: '自动' })[job.kind] || '刮削';
 // 任务列表显示「歌曲名」，不再只给一串 id；id 退到提示与明细里。
 function jobLabel(job) {
@@ -311,7 +339,7 @@ async function renderDashboard() {
   const cards = [
     ['源目录', data.source_dir, data.source_exists ? 'ok' : 'bad', data.source_exists ? '目录可访问' : '目录不存在，请检查挂载'],
     ['音乐库目录', data.library_dir, data.library_exists ? 'ok' : 'bad', data.library_exists ? '目录可访问' : '首次执行时自动创建'],
-    ['转移方式', state.settings.transfer_mode || 'copy', 'warn', same === null ? '等待目录就绪' : (same ? '源与库在同一挂载点 · 可用硬链接' : '源与库跨挂载点 · 硬链接不可用')],
+    ['转移方式', modeLabel(state.settings.transfer_mode), 'warn', same === null ? '等待目录就绪' : (same ? '源与库在同一挂载点 · 可用硬链接' : '源与库跨挂载点 · 硬链接不可用')],
     ['当前账号', state.auth.username || '—', 'ok', state.auth.is_admin ? '管理员 · 会话保护已开启' : '普通账号 · 会话保护已开启'],
     ['自动刮削', watch.enabled ? '已开启' : '已关闭', watch.enabled ? 'ok' : 'warn',
       watch.enabled
@@ -320,7 +348,7 @@ async function renderDashboard() {
   ];
   const modeRows = data.capabilities.map((item) => `
     <tr>
-      <td><b>${esc(item.label)}</b> <span class="mono muted">${esc(item.mode)}</span></td>
+      <td><b>${esc(item.label)}</b></td>
       <td>${capabilityBadge(item)}${item.probed ? ' <span class="tiny">已自检</span>' : ''}</td>
       <td class="muted">${esc(item.reason)}</td>
     </tr>`).join('');
@@ -332,7 +360,7 @@ async function renderDashboard() {
       <td class="muted small">${esc(fmtTime(job.created_at))}</td></tr>`).join('');
   const recent = (data.recent_done || []).map((item) => `
     <tr><td class="truncate" title="${esc(item.source)}">${esc(fileName(item.source))}</td>
-      <td class="mono">${esc(item.mode)}</td>
+      <td>${esc(item.mode_label || modeLabel(item.mode))}</td>
       <td class="muted small">${esc(fmtTime(item.created_at))}</td></tr>`).join('');
 
   $('page').innerHTML = `
@@ -414,7 +442,7 @@ async function renderFiles() {
       <div class="btn-row">
         <button class="ghost-btn" id="preview-btn">① 生成整理计划（预览）</button>
         <button class="primary-btn" id="scrape-btn">② 直接刮削整理</button>
-        <span class="small muted">当前方式：<b>${esc(state.settings.transfer_mode || 'copy')}</b> · 建议先预览</span>
+        <span class="small muted">当前方式：<b>${esc(modeLabel(state.settings.transfer_mode))}</b> · 建议先预览</span>
       </div>
     </div>`;
   $('refresh-files').addEventListener('click', renderFiles);
@@ -526,8 +554,8 @@ function planCard(item, index) {
   const meta = choice.meta;
   const candidates = item.candidates || [];
   const chosenLabel = choice.index === -2
-    ? `自动结果 · ${esc(item.source_name || 'local')}`
-    : choice.index === -1 ? '保留文件原标签' : `候选 #${choice.index + 1} · ${esc(candidates[choice.index]?.metadata?.source || '')}`;
+    ? `自动结果 · ${esc(sourceLabel(item.source_name))}`
+    : choice.index === -1 ? '保留文件原标签' : `候选 ${choice.index + 1} · ${esc(sourceLabel(candidates[choice.index]?.metadata?.source))}`;
   const candidateButtons = candidates.map((candidate, i) => {
     const m = candidate.metadata || {};
     return `<button class="cand-chip${choice.index === i ? ' active' : ''}" data-cand="${i}" data-idx="${index}"
@@ -564,11 +592,11 @@ function planCard(item, index) {
           <span class="conf ${tone}">${(item.confidence || 0).toFixed(2)}</span>
         </div>
       </div>
-      <div class="plan-source mono" title="${esc(item.source)}">${esc(fileName(item.source))}</div>
+      <div class="plan-source mono" title="${esc(item.source)}">${esc(shortPath(item.source))}</div>
       <div class="diff">
         ${field('title', '标题')}${field('artist', '歌手')}${field('album', '专辑')}${field('year', '年份')}
       </div>
-      <div class="plan-target mono" title="${esc(item.target)}">${esc(item.target || '—')}</div>
+      <div class="plan-target mono" title="${esc(item.target)}">${esc(shortPath(item.target) || '—')}</div>
       <div class="plan-foot">
         <span class="small muted">${chosenLabel}</span>
         <span class="small muted truncate" title="${esc(item.detail)}">${esc(item.detail)}</span>
@@ -576,7 +604,7 @@ function planCard(item, index) {
       ${candidates.length ? `<div class="cand-row">${candidateButtons}</div>` : ''}
       ${candidates.length || (item.local_title && choice.index !== -1) ? `<div class="cand-row">
         <button class="cand-chip${choice.index === -2 ? ' active' : ''}" data-cand="-2" data-idx="${index}">
-          <b>自动结果</b><span>${esc(item.source_name || 'local')}</span></button>
+          <b>自动结果</b><span>${esc(sourceLabel(item.source_name))}</span></button>
         <button class="cand-chip${choice.index === -1 ? ' active' : ''}" data-cand="-1" data-idx="${index}">
           <b>保留原标签</b><span>${esc(item.local_title || '无')}</span></button>
       </div>` : ''}
@@ -830,13 +858,19 @@ async function showJobItems(jobId) {
   try { items = (await api(`/api/jobs/${jobId}/items?limit=500`)).items || []; }
   catch (error) { toast(error.message, true); return; }
   const rows = items.map((item) => `<tr>
-    <td class="truncate" title="${esc(item.source)}">${esc(fileName(item.source))}</td>
-    <td class="mono truncate">${esc(item.target)}</td><td>${esc(item.mode)}</td>
-    <td>${statusBadge(item.status)}</td><td class="muted small">${esc(item.detail)}</td></tr>`).join('');
+    <td class="path-cell"><div class="path-name" title="${esc(fileName(item.source))}">${esc(fileName(item.source))}</div>
+      <div class="path-dir with-title" data-full="${esc(dirName(item.source))}">${esc(shortPath(dirName(item.source)))}</div></td>
+    <td class="path-cell"><div class="path-name" title="${esc(fileName(item.target))}">${esc(fileName(item.target) || '—')}</div>
+      <div class="path-dir with-title" data-full="${esc(dirName(item.target))}">${esc(item.target ? shortPath(dirName(item.target)) : '—')}</div></td>
+    <td class="mode-cell">${esc(item.mode_label || modeLabel(item.mode))}</td>
+    <td>${statusBadge(item.status)}</td>
+    <td class="muted small detail-cell with-title" data-full="${esc(item.detail)}">${esc(briefDetail(item.detail))}</td></tr>`).join('');
   $('job-items').innerHTML = `<div class="panel"><div class="panel-head"><div><h2>任务明细</h2>
-      <p>${esc(fileName(items[0] && items[0].source) || jobId)} · <span class="mono">${esc(jobId)}</span></p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
+      <p>${esc(fileName(items[0] && items[0].source) || '本次任务')} · <span class="mono">${esc(jobId)}</span></p></div></div>
+    <div class="table-wrap"><table class="items-table"><thead><tr><th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="5" class="empty">暂无明细</td></tr>'}</tbody></table></div></div>`;
+  // 悬停提示在渲染后统一绑定，避免把长路径塞进 innerHTML 属性。
+  $('job-items').querySelectorAll('.with-title').forEach((node) => { node.title = node.dataset.full || ''; });
   $('job-items').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 

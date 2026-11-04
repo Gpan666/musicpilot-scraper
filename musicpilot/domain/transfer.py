@@ -36,6 +36,28 @@ class ConflictPolicy(StrEnum):
     RENAME = "rename"
 
 
+# 失败原因按异常类型翻译成中文，异常原文只作补充，避免整句英文。
+TYPE_LABELS = {
+    "FileExistsError": "目标已存在",
+    "FileNotFoundError": "文件或目录不存在",
+    "PermissionError": "权限不足",
+    "IsADirectoryError": "目标是目录",
+    "NotADirectoryError": "路径中有非目录项",
+    "OSError": "文件操作失败",
+}
+MODE_LABELS: dict[str, str] = {
+    TransferMode.COPY.value: "复制",
+    TransferMode.MOVE.value: "移动",
+    TransferMode.HARDLINK.value: "硬链接",
+    TransferMode.SYMLINK.value: "软链接",
+}
+
+
+def mode_label(mode: str) -> str:
+    """Chinese label for a stored transfer mode (``copy`` -> ``复制``)."""
+    return MODE_LABELS.get(str(mode or "").strip(), "未知方式")
+
+
 MODE_INFO: dict[TransferMode, dict[str, Any]] = {
     TransferMode.COPY: {
         "mode": "copy",
@@ -311,15 +333,15 @@ def resolve_conflict(target: Path, policy: ConflictPolicy) -> tuple[Path | None,
     if not (target.exists() or target.is_symlink()):
         return target, ""
     if policy is ConflictPolicy.SKIP:
-        return None, "目标已存在，按冲突策略跳过"
+        return None, "目标已存在，已跳过"
     if policy is ConflictPolicy.OVERWRITE:
-        return target, "目标已存在，将按冲突策略覆盖"
+        return target, "目标已存在，已覆盖"
     stem, suffix = target.stem, target.suffix
     for index in range(2, 1000):
         candidate = target.with_name(f"{stem} ({index}){suffix}")
         if not (candidate.exists() or candidate.is_symlink()):
-            return candidate, f"目标已存在，自动改名为 {candidate.name}"
-    return None, "目标冲突且无法生成可用文件名，跳过"
+            return candidate, "目标已存在，已自动改名"
+    return None, "目标冲突且无法改名，已跳过"
 
 
 def same_file(source: Path, target: Path) -> bool:
@@ -364,16 +386,16 @@ def transfer(
         try:
             if not target.resolve().is_relative_to(allowed_root.resolve()):
                 return result("failed", "目标路径越出音乐库目录，已拒绝")
-        except OSError as exc:
-            return result("failed", f"无法解析目标路径：{exc}")
+        except OSError:
+            return result("failed", "无法解析目标路径")
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return result("failed", f"无法创建目标目录：{exc}")
+    except OSError:
+        return result("failed", "无法创建目标目录，请检查权限")
 
     if same_file(source, target):
-        return result("skipped", "源与目标已经是同一个文件", destination=target)
+        return result("skipped", "源与目标已是同一个文件", destination=target)
 
     destination, conflict_note = resolve_conflict(target, conflict_policy)
     if destination is None:
@@ -388,19 +410,19 @@ def transfer(
         if mode is TransferMode.COPY:
             shutil.copy2(source, temporary)
             os.replace(temporary, destination)
-            detail = "已复制到音乐库（源文件保留）"
+            detail = "已复制进库，源文件保留"
 
         elif mode is TransferMode.MOVE:
             source_device = device_of(source.parent)
             target_device = device_of(destination.parent)
             if source_device is not None and source_device == target_device:
                 os.replace(source, destination)
-                detail = "同一文件系统内已原子移动（源文件已移除）"
+                detail = "已移动进库，源文件已删除"
             else:
                 shutil.copy2(source, temporary)
                 os.replace(temporary, destination)
                 source.unlink()
-                detail = "跨文件系统：复制完成后已删除源文件"
+                detail = "跨磁盘：已复制进库并删除源文件"
 
         elif mode is TransferMode.HARDLINK:
             source_device = device_of(source)
@@ -408,12 +430,11 @@ def transfer(
             if source_device is None or target_device is None or source_device != target_device:
                 return result(
                     "failed",
-                    "硬链接要求源与目标在同一文件系统/同一挂载点；"
-                    "请把源目录和音乐库放到同一个挂载点下，或改用复制/移动/软链接",
+                    "硬链接要求源与库在同一挂载点，请改用复制、移动或软链接",
                 )
             os.link(source, temporary)
             os.replace(temporary, destination)
-            detail = "已建立硬链接（与目标共享同一 inode，不额外占用空间）"
+            detail = "已建硬链接，与源文件共用同一份数据"
 
         elif mode is TransferMode.SYMLINK:
             if symlink_relative:
@@ -422,9 +443,7 @@ def transfer(
                 link_target = str(source.resolve())
             os.symlink(link_target, temporary)
             os.replace(temporary, destination)
-            detail = (
-                f"已创建{'相对' if symlink_relative else '绝对'}符号链接，指向 {link_target}"
-            )
+            detail = "已建软链接，指向源文件"
         else:  # pragma: no cover - enum is exhaustive
             return result("failed", f"不支持的转移方式：{mode}")
 
@@ -432,8 +451,8 @@ def transfer(
         _cleanup_temp(temporary)
         hint = ""
         if mode is TransferMode.SYMLINK and os.name == "nt":
-            hint = " Windows 创建符号链接通常需要管理员权限或开启开发者模式。"
-        return result("failed", f"{type(exc).__name__}: {exc}.{hint}")
+            hint = "（Windows 建软链接需要管理员权限或开发者模式）"
+        return result("failed", f"{TYPE_LABELS.get(type(exc).__name__, '文件操作出错')}：{exc}{hint}")
 
     _cleanup_temp(temporary)
     if conflict_note:
