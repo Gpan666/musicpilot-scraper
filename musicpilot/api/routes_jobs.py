@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -13,6 +14,11 @@ from musicpilot.services.jobs import JobConflict
 from musicpilot.services.scraper import JobRequest
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+def _job_payload(context: AppContext, job: dict[str, Any]) -> dict[str, Any]:
+    """Attach the display name so the UI never has to show a raw job id."""
+    return {**job, "label": context.jobs.label(str(job.get("id") or ""))}
 
 
 @router.post("", status_code=202)
@@ -29,16 +35,18 @@ async def create_job(
         organize=payload.organize,
         skip_low_confidence=payload.skip_low_confidence,
     )
+    paths = payload.paths or []
     choices = (
         {}
         if dry_run
         else {path: item.model_dump() for path, item in payload.choices.items()}
     )
+    title = Path(paths[0]).name if len(paths) == 1 else ""
     try:
-        job = context.jobs.start(request, choices)
+        job = context.jobs.start(request, choices, title=title)
     except JobConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return job.as_dict()
+    return _job_payload(context, job.as_dict())
 
 
 @router.get("")
@@ -46,7 +54,8 @@ def list_jobs(
     limit: int = 30,
     context: AppContext = Depends(get_context),
 ) -> dict[str, Any]:
-    return {"jobs": context.jobs.list(max(1, min(limit, 100)))}
+    rows = context.jobs.list(max(1, min(limit, 100)))
+    return {"jobs": [_job_payload(context, row) for row in rows]}
 
 
 @router.get("/{job_id}")
@@ -54,7 +63,10 @@ def get_job(job_id: str, context: AppContext = Depends(get_context)) -> dict[str
     job = context.jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return {"job": job, "items": context.jobs.items(job_id, limit=50)}
+    return {
+        "job": _job_payload(context, job),
+        "items": context.jobs.items(job_id, limit=50),
+    }
 
 
 @router.get("/{job_id}/items")

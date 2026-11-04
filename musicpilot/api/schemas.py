@@ -36,5 +36,13 @@ class CapabilityProbe(BaseModel):
     probe: bool = False
 
 
+class WatchPatch(BaseModel):
+    """自动刮削开关；只提交想改的字段。"""
+
+    enabled: bool | None = None
+    interval: float | None = Field(default=None, ge=5, le=3600)
+    settle: float | None = Field(default=None, ge=0, le=3600)
+
+
 class SettingsPatch(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)

@@ -36,6 +36,7 @@ const state = {
   selected: new Set(),
   jobs: [],
   previewJob: null,
+  watch: null,
   currentJobId: null,
   pollTimer: null,
   capabilities: [],
@@ -59,6 +60,22 @@ const fmtDuration = (seconds) => {
   return `${m}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 };
 const fileName = (path) => String(path || '').split(/[\\/]/).pop();
+const jobKind = (job) => ({ preview: '预览', scrape: '刮削', auto: '自动' })[job.kind] || '刮削';
+// 任务列表显示「歌曲名」，不再只给一串 id；id 退到提示与明细里。
+function jobLabel(job) {
+  const label = String(job.label || '').trim();
+  if (label) return label;
+  if (job.title) return fileName(job.title);
+  if (job.current_file) return fileName(job.current_file);
+  return `${jobKind(job)} · ${job.processed || 0} 个文件`;
+}
+function jobNote(job) {
+  const parts = [jobKind(job)];
+  if (job.total) parts.push(`${job.processed || 0}/${job.total}`);
+  else if (job.processed) parts.push(`${job.processed} 项`);
+  parts.push(`#${job.id}`);
+  return parts.join(' · ');
+}
 
 async function api(path, options = {}) {
   const init = { credentials: 'same-origin', ...options };
@@ -155,7 +172,7 @@ async function refreshAuth() {
 }
 async function enterApp() {
   hideAuth();
-  await Promise.all([loadSettings(), loadModes()]);
+  await Promise.all([loadSettings(), loadModes(), loadWatch()]);
   try {
     const about = await api('/api/about');
     $('version').textContent = `v${about.version}`;
@@ -290,11 +307,16 @@ async function renderDashboard() {
   catch (error) { toast(error.message, true); return; }
   state.capabilities = data.capabilities;
   const same = data.same_device;
+  const watch = state.watch || {};
   const cards = [
     ['源目录', data.source_dir, data.source_exists ? 'ok' : 'bad', data.source_exists ? '目录可访问' : '目录不存在，请检查挂载'],
     ['音乐库目录', data.library_dir, data.library_exists ? 'ok' : 'bad', data.library_exists ? '目录可访问' : '首次执行时自动创建'],
     ['转移方式', state.settings.transfer_mode || 'copy', 'warn', same === null ? '等待目录就绪' : (same ? '源与库在同一挂载点 · 可用硬链接' : '源与库跨挂载点 · 硬链接不可用')],
     ['当前账号', state.auth.username || '—', 'ok', state.auth.is_admin ? '管理员 · 会话保护已开启' : '普通账号 · 会话保护已开启'],
+    ['自动刮削', watch.enabled ? '已开启' : '已关闭', watch.enabled ? 'ok' : 'warn',
+      watch.enabled
+        ? `每 ${Math.round(watch.interval || 30)} 秒检查源目录${watch.tracked ? ` · 已记录 ${watch.tracked} 个文件` : ''}`
+        : '开启后新文件会自动刮削'],
   ];
   const modeRows = data.capabilities.map((item) => `
     <tr>
@@ -303,8 +325,8 @@ async function renderDashboard() {
       <td class="muted">${esc(item.reason)}</td>
     </tr>`).join('');
   const jobs = (data.jobs || []).map((job) => `
-    <tr><td class="mono">${esc(job.id)}</td>
-      <td>${job.dry_run ? '预览' : '刮削'}</td>
+    <tr><td class="truncate" title="${esc(jobNote(job))}">${esc(jobLabel(job))}</td>
+      <td>${job.dry_run ? '预览' : jobKind(job)}</td>
       <td>${statusBadge(job.status)}</td>
       <td class="muted">${esc(job.processed || 0)} 项</td>
       <td class="muted small">${esc(fmtTime(job.created_at))}</td></tr>`).join('');
@@ -335,7 +357,7 @@ async function renderDashboard() {
     <div class="grid cols-2">
       <div class="panel"><div class="panel-head"><h2>最近任务</h2>
         <button class="ghost-btn" data-go="jobs">查看全部</button></div>
-        <div class="table-wrap"><table><thead><tr><th>ID</th><th>类型</th><th>状态</th><th>数量</th><th>时间</th></tr></thead>
+        <div class="table-wrap"><table><thead><tr><th>文件</th><th>类型</th><th>状态</th><th>数量</th><th>时间</th></tr></thead>
           <tbody>${jobs || '<tr><td colspan="5" class="empty">暂无任务</td></tr>'}</tbody></table></div></div>
       <div class="panel"><div class="panel-head"><h2>最近整理</h2></div>
         <div class="table-wrap"><table><thead><tr><th>文件</th><th>方式</th><th>时间</th></tr></thead>
@@ -755,7 +777,7 @@ async function renderJobs() {
   const active = jobs.find((job) => job.status === 'running' || job.status === 'pending');
   const progressCard = active ? `
     <div class="panel"><div class="panel-head"><div><h2>当前任务</h2>
-      <p>${esc(active.id)} · ${esc(active.message || '正在处理')}</p></div>
+      <p>${esc(jobLabel(active))} · ${esc(active.message || '正在处理')} · <span class="mono">${esc(active.id)}</span></p></div>
       <button class="danger-btn" id="cancel-job">取消任务</button></div>
       <div class="progress"><span style="width:${Math.round(100 * (active.processed || 0) / Math.max(1, active.total || active.processed || 1))}%"></span></div>
       <div class="between small muted" style="margin-top:8px">
@@ -763,7 +785,8 @@ async function renderJobs() {
         <span>成功 ${active.done || 0} · 跳过 ${active.skipped || 0} · 失败 ${active.failed || 0}</span></div>
     </div>` : '';
   const rows = jobs.map((job) => `<tr>
-    <td class="mono">${esc(job.id)}</td><td>${job.dry_run ? '预览' : '刮削'}</td>
+    <td class="truncate" title="${esc(jobNote(job))}">${esc(jobLabel(job))}</td>
+    <td>${job.dry_run ? '预览' : jobKind(job)}</td>
     <td>${statusBadge(job.status)}</td>
     <td class="muted">${esc(job.processed || 0)} / ${esc(job.total || 0)}</td>
     <td class="muted small">${esc(fmtTime(job.created_at))}</td>
@@ -772,14 +795,24 @@ async function renderJobs() {
       <a class="ghost-btn small" href="/api/jobs/${esc(job.id)}/report">CSV</a>
       ${job.dry_run ? `<button class="ghost-btn small" data-plan="${esc(job.id)}">打开计划</button>` : ''}
     </div></td></tr>`).join('');
-  $('page').innerHTML = `${progressCard}
+  const watch = state.watch || {};
+  const watchBar = `
+    <div class="panel"><div class="between">
+      <div><h3>自动刮削 <span class="badge ${watch.enabled ? 'ok' : 'warn'}">${watch.enabled ? '开启' : '关闭'}</span></h3>
+        <p class="small muted" style="margin-top:4px">${watch.enabled
+          ? `每 ${Math.round(watch.interval || 30)} 秒检查一次${watch.last_scan ? ` · 上次 ${esc(fmtTime(watch.last_scan))}` : ''} · 新文件会自动排入上面的任务`
+          : '开启后，源目录里出现新文件会自动刮削，无需手动操作'}</p></div>
+      <button class="ghost-btn" data-go="settings">${watch.enabled ? '调整' : '去开启'}</button>
+    </div></div>`;
+  $('page').innerHTML = `${watchBar}${progressCard}
     <div class="panel"><div class="panel-head"><div><h2>全部任务</h2><p>每次只允许一个任务运行，避免文件竞争</p></div>
       <button class="ghost-btn" id="refresh-jobs">刷新</button></div>
-      <div class="table-wrap"><table><thead><tr><th>ID</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
+      <div class="table-wrap"><table><thead><tr><th>文件 / 歌曲名</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="6" class="empty">暂无任务</td></tr>'}</tbody></table></div>
     </div>
     <div id="job-items"></div>`;
   $('refresh-jobs').addEventListener('click', renderJobs);
+  document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
   const cancel = $('cancel-job');
   if (cancel) cancel.addEventListener('click', async () => {
     try { await api(`/api/jobs/${active.id}/cancel`, { method: 'POST' }); toast('已请求取消'); await renderJobs(); }
@@ -800,7 +833,8 @@ async function showJobItems(jobId) {
     <td class="truncate" title="${esc(item.source)}">${esc(fileName(item.source))}</td>
     <td class="mono truncate">${esc(item.target)}</td><td>${esc(item.mode)}</td>
     <td>${statusBadge(item.status)}</td><td class="muted small">${esc(item.detail)}</td></tr>`).join('');
-  $('job-items').innerHTML = `<div class="panel"><div class="panel-head"><h2>任务 ${esc(jobId)} 明细</h2></div>
+  $('job-items').innerHTML = `<div class="panel"><div class="panel-head"><div><h2>任务明细</h2>
+      <p>${esc(fileName(items[0] && items[0].source) || jobId)} · <span class="mono">${esc(jobId)}</span></p></div></div>
     <div class="table-wrap"><table><thead><tr><th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="5" class="empty">暂无明细</td></tr>'}</tbody></table></div></div>`;
   $('job-items').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -884,6 +918,28 @@ function renderSettings() {
       </div>
       <button class="ghost-btn" id="create-user">添加账号</button>
     </div>` : '';
+  const watch = state.watch || {};
+  const watchCard = `
+    <div class="panel">
+      <div class="panel-head"><div><h2>自动刮削</h2>
+        <p>盯住源目录，出现新文件就自动排一个刮削任务，不用再手动点</p></div>
+        <span class="badge ${watch.enabled ? 'ok' : 'warn'}">${watch.enabled ? '运行中' : '已关闭'}</span></div>
+      <label class="check-line"><input type="checkbox" id="f-watch" ${watch.enabled ? 'checked' : ''}>启用自动刮削（监控源目录）</label>
+      <div class="grid cols-2">
+        <label class="field"><span class="field-label">检查间隔（秒）</span>
+          <input id="f-watch-interval" type="number" min="5" max="3600" step="5" value="${esc(watch.interval ?? 30)}"></label>
+        <label class="field"><span class="field-label">稳定等待（秒）</span>
+          <input id="f-watch-settle" type="number" min="0" max="3600" step="5" value="${esc(watch.settle ?? 10)}"></label>
+      </div>
+      <p class="small muted" style="margin:8px 0 12px">稳定等待用于避开「还在下载 / 还在写入」的半成品文件；已经刮削过的文件不会被再次处理，切换目录会重新统计。</p>
+      <div class="btn-row">
+        <button class="ghost-btn" id="watch-reset">把现有文件标记为已处理</button>
+        <span class="small muted">${watch.enabled
+          ? `已记录 ${esc(watch.tracked || 0)} 个文件${watch.last_scan ? ` · 上次检查 ${esc(fmtTime(watch.last_scan))}` : ''}${watch.last_job_label ? ` · 最近任务：${esc(watch.last_job_label)}` : ''}`
+          : '开启后这里会显示检查状态'}</span>
+      </div>
+      ${watch.last_error ? `<p class="small" style="color:var(--danger);margin-top:8px">${esc(watch.last_error)}</p>` : ''}
+    </div>`;
   $('page').innerHTML = `
     <div class="panel">
       <div class="panel-head"><div><h2>目录</h2>
@@ -936,6 +992,7 @@ function renderSettings() {
         <p class="muted small" style="margin-top:8px">标签在转移之前写入源文件。使用硬链接 / 软链接时目标共享源文件数据，因此源文件标签也会被补全，之后修改任一边都会影响另一边。若不希望改动源文件，请关闭「写入音频标签」或改用复制。</p>
       </div>
     </div>
+    ${watchCard}
     ${accountCard}
     <div class="panel"><div class="between">
       <div><h3>保存设置</h3>
@@ -958,6 +1015,11 @@ function renderSettings() {
   });
   $('f-template').addEventListener('input', updateExample);
   $('save-settings').addEventListener('click', saveSettings);
+  $('f-watch').addEventListener('change', saveWatch);
+  $('watch-reset').addEventListener('click', async () => {
+    try { state.watch = await api('/api/watch/reset', { method: 'POST' }); toast('已把现有文件标记为已处理'); await renderSettings(); }
+    catch (error) { toast(error.message, true); }
+  });
   const createUser = $('create-user');
   if (createUser) createUser.addEventListener('click', async () => {
     try {
@@ -1008,6 +1070,20 @@ async function saveSettings() {
   } catch (error) { toast(error.message, true); }
 }
 
+async function saveWatch() {
+  const body = {
+    enabled: $('f-watch').checked,
+    interval: Number($('f-watch-interval').value) || 30,
+    settle: $('f-watch-settle').value === '' ? 0 : Number($('f-watch-settle').value),
+  };
+  try {
+    state.watch = await api('/api/watch', { method: 'PUT', body });
+    toast(body.enabled ? '自动刮削已开启' : '自动刮削已关闭');
+    await loadSettings();
+    await renderSettings();
+  } catch (error) { toast(error.message, true); }
+}
+
 async function renderDocs() {
   let data;
   try { data = await api('/api/transfer-modes'); }
@@ -1044,6 +1120,9 @@ async function loadSettings() {
   const result = await api('/api/settings');
   state.settings = result.settings || {};
   state.settingsMeta = result;
+}
+async function loadWatch() {
+  try { state.watch = await api('/api/watch'); } catch (_) { state.watch = null; }
 }
 async function loadModes() {
   const result = await api('/api/transfer-modes');
