@@ -411,6 +411,16 @@ tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--surface-2); }
 td.th-key { color: var(--text-2); width: 130px; }
 .empty { padding: 34px 12px !important; text-align: center; color: var(--text-3); }
+/* 任务明细：文件名与所在目录各占一行，长路径只压缩中间，首尾都看得见。 */
+.items-table { min-width: 720px; }
+.items-table .path-cell { min-width: 190px; max-width: 320px; }
+.path-name { font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button); overflow-wrap: anywhere; }
+.path-dir {
+  font-family: var(--mono); font-size: var(--fs-footnote); color: var(--text-3);
+  margin-top: 2px; overflow-wrap: anywhere; cursor: help;
+}
+.mode-cell { white-space: nowrap; }
+.detail-cell { max-width: 300px; line-height: 1.5; cursor: help; }
 .badge {
   display: inline-block;
   padding: 3px 11px;
@@ -650,9 +660,10 @@ td.th-key { color: var(--text-2); width: 130px; }
 .plan-title { font-size: var(--fs-body); font-weight: var(--wght-heading); font-variation-settings: 'wght' var(--wght-heading); overflow-wrap: anywhere; }
 .plan-sub { font-size: var(--fs-small); color: var(--text-2); overflow-wrap: anywhere; }
 .plan-flags { display: flex; align-items: center; gap: 6px; flex: none; }
+/* 源文件名完整显示：超长时在任意位置换行，不再截断成「01 - Queen - Bohe…」。 */
 .plan-source {
   font-size: var(--fs-footnote); color: var(--text-3);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere; word-break: break-word; line-height: 1.45;
 }
 .conf {
   padding: 2px 9px; border-radius: var(--radius-pill);
@@ -685,7 +696,7 @@ td.th-key { color: var(--text-2); width: 130px; }
 .diff-input:focus { outline: none; border-color: var(--primary); background: var(--primary-soft); }
 .plan-target {
   font-size: var(--fs-footnote); color: var(--text-3);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow-wrap: anywhere; word-break: break-word; line-height: 1.45;
   padding: 5px 9px; border-radius: 9px; background: var(--surface);
 }
 .plan-foot { display: flex; gap: 10px; align-items: center; justify-content: space-between; }

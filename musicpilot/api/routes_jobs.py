@@ -10,15 +10,29 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from musicpilot.api.context import AppContext, get_context
 from musicpilot.api.schemas import JobCreate
 from musicpilot.domain.models import JobKind
+from musicpilot.domain.transfer import mode_label
 from musicpilot.services.jobs import JobConflict
 from musicpilot.services.scraper import JobRequest
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+STATUS_LABELS = {
+    "planned": "计划中",
+    "done": "成功",
+    "skipped": "跳过",
+    "failed": "失败",
+    "needs_review": "需确认",
+}
+
 
 def _job_payload(context: AppContext, job: dict[str, Any]) -> dict[str, Any]:
     """Attach the display name so the UI never has to show a raw job id."""
     return {**job, "label": context.jobs.label(str(job.get("id") or ""))}
+
+
+def _item_payload(item: dict[str, Any]) -> dict[str, Any]:
+    """Add the Chinese label for the transfer mode, old rows included."""
+    return {**item, "mode_label": mode_label(str(item.get("mode") or ""))}
 
 
 @router.post("", status_code=202)
@@ -65,7 +79,7 @@ def get_job(job_id: str, context: AppContext = Depends(get_context)) -> dict[str
         raise HTTPException(status_code=404, detail="任务不存在")
     return {
         "job": _job_payload(context, job),
-        "items": context.jobs.items(job_id, limit=50),
+        "items": [_item_payload(row) for row in context.jobs.items(job_id, limit=50)],
     }
 
 
@@ -76,11 +90,10 @@ def get_items(
     offset: int = 0,
     context: AppContext = Depends(get_context),
 ) -> dict[str, Any]:
-    return {
-        "items": context.jobs.items(
-            job_id, limit=max(1, min(limit, 2000)), offset=max(0, offset)
-        )
-    }
+    rows = context.jobs.items(
+        job_id, limit=max(1, min(limit, 2000)), offset=max(0, offset)
+    )
+    return {"items": [_item_payload(row) for row in rows]}
 
 
 @router.post("/{job_id}/cancel")
@@ -105,8 +118,8 @@ def report(job_id: str, context: AppContext = Depends(get_context)) -> Response:
             [
                 item["source"],
                 item["target"],
-                item["mode"],
-                item["status"],
+                mode_label(str(item.get("mode") or "")),
+                STATUS_LABELS.get(str(item.get("status") or ""), ""),
                 f"{item['confidence']:.2f}",
                 item["source_name"],
                 item["title"],
