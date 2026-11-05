@@ -8,9 +8,12 @@ from typing import Any
 
 import httpx
 
-from musicpilot.adapters.metadata.base import MetadataProvider, candidate_from_dict
+from musicpilot.adapters.metadata.base import candidate_from_dict
+from musicpilot.adapters.metadata.kugou import KugouProvider
+from musicpilot.adapters.metadata.kuwo import KuwoProvider
 from musicpilot.adapters.metadata.musicbrainz import MusicBrainzProvider
 from musicpilot.adapters.metadata.netease import NetEaseProvider
+from musicpilot.adapters.metadata.qq import QQMusicProvider
 from musicpilot.adapters.store import Store
 from musicpilot.adapters.tags import fetch_cover
 from musicpilot.config import RuntimeSettings, Settings
@@ -44,7 +47,23 @@ class Resolution:
 
 
 # 任务明细的说明列对用户展示，来源名一律用中文，不出现英文品牌以外的词。
-SOURCE_LABELS = {"musicbrainz": " MusicBrainz", "netease": "网易云", "local": "本地标签"}
+SOURCE_LABELS = {
+    "musicbrainz": "MusicBrainz",
+    "netease": "网易云",
+    "qq": "QQ音乐",
+    "kugou": "酷狗音乐",
+    "kuwo": "酷我音乐",
+    "local": "本地标签",
+}
+
+# 顺序影响并发查询的顺序（结果仍统一打分排序），国内音源优先，中文曲库命中率更高。
+PROVIDER_CLASSES = (
+    ("musicbrainz", MusicBrainzProvider),
+    ("netease", NetEaseProvider),
+    ("qq", QQMusicProvider),
+    ("kugou", KugouProvider),
+    ("kuwo", KuwoProvider),
+)
 
 
 class MetadataService:
@@ -52,7 +71,7 @@ class MetadataService:
         self.settings = settings
         self.store = store
         self.client: httpx.AsyncClient | None = None
-        self.providers: dict[str, MetadataProvider] = {}
+        self.providers: dict[str, Any] = {}
 
     async def startup(self) -> None:
         headers = {
@@ -72,10 +91,7 @@ class MetadataService:
                 self.client = httpx.AsyncClient(proxies=proxy, **kwargs)  # type: ignore[call-arg]
         else:
             self.client = httpx.AsyncClient(**kwargs)
-        self.providers = {
-            "musicbrainz": MusicBrainzProvider(self.client),
-            "netease": NetEaseProvider(self.client),
-        }
+        self.providers = {name: factory(self.client) for name, factory in PROVIDER_CLASSES}
 
     async def shutdown(self) -> None:
         if self.client is not None:
@@ -182,12 +198,22 @@ class MetadataService:
         return await fetch_cover(url, client=self.client)
 
     async def lyrics_for(self, meta: TrackMetadata) -> str | None:
-        if meta.lyrics or meta.source != "netease" or not meta.external_id:
+        """取歌词：搜索接口自带的先用，否则按来源调各自的歌词接口。"""
+        if meta.lyrics:
             return meta.lyrics
-        provider = self.providers.get("netease")
-        if isinstance(provider, NetEaseProvider):
-            return await provider.lyrics(meta.external_id)
-        return None
+        if not meta.external_id:
+            return None
+        provider = self.providers.get(meta.source)
+        fetch = getattr(provider, "lyrics", None)
+        if not callable(fetch):
+            return None
+        try:
+            return await fetch(meta.external_id, album=meta.album)
+        except TypeError:
+            # 网易云的 lyrics 只接一个参数
+            return await fetch(meta.external_id)
+        except Exception:  # noqa: BLE001 - 歌词是加分项，拿不到不影响主流程
+            return None
 
 
 async def cover_embedding(path: Any) -> tuple[bytes, str] | None:

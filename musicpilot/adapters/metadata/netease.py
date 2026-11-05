@@ -62,11 +62,23 @@ class NetEaseProvider:
                 if isinstance(item, dict) and item.get("name")
             )
             album_info = song.get("album") if isinstance(song.get("album"), dict) else {}
+            # 网易云搜索结果里 album.artist 是专辑艺术家，和歌曲歌手（合唱、feat.）可能不同
+            album_artists = album_info.get("artist") if isinstance(album_info, dict) else None
+            album_artist = None
+            if isinstance(album_artists, dict) and album_artists.get("name"):
+                album_artist = str(album_artists.get("name")).strip()
+            elif isinstance(album_artists, list):
+                album_artist = ", ".join(
+                    str(item.get("name") or "").strip()
+                    for item in album_artists
+                    if isinstance(item, dict) and item.get("name")
+                ) or None
             candidates.append(
                 TrackMetadata(
                     title=name,
                     artist=artist_names or None,
                     album=str(album_info.get("name") or "") or None,
+                    album_artist=album_artist,
                     year=_year_from_ms(album_info.get("publishTime")),
                     cover_url=str(album_info.get("picUrl") or "") or None,
                     source=self.name,
