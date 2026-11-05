@@ -3,21 +3,29 @@
 用轮询而不是 inotify：容器里的源目录通常是 NFS / SMB / FUSE 挂载，
 文件系统事件在这些场景下并不可靠，而一次目录遍历对个人音乐库来说足够便宜。
 
-三条硬规则，缺一条就会「自动刮削一直触发」：
+五条硬规则，缺一条就会「自动刮削一直触发，但库里什么都没多」：
 
-1. **已处理的文件写进 SQLite**（``watch_seen``），不只在内存里。进程重启、
+1. **音乐库里已经有对应文件就算处理过**（核心）。自动任务只刮「库里还没有
+   的音频」：按目标路径、文件名、文件大小三层判定。用复制 / 硬链接 / 软链接
+   时源文件留在原地，只靠指纹判断会导致「刮完一遍、下一轮又刮一遍、再写一份」，
+   任务记录一直涨而库里的文件没变化。
+2. **已处理的文件写进 SQLite**（``watch_seen``），不只在内存里。进程重启、
    容器更新后仍然认得历史文件，不会把整个源目录当成新文件重刮一遍。
-2. **开启监控的那一刻，源目录里已有的文件算作旧文件**，只记录不刮削。
+3. **开启监控的那一刻，源目录里已有的文件算作旧文件**，只记录不刮削。
    老文件想刮就手动点，或先「把现有文件标记为已处理」再放新文件。
-3. **刮削中间产物（``.part`` / ``.!qB`` / ``.aria2`` …）等写完再说**，
+4. **刮削中间产物（``.part`` / ``.!qB`` / ``.aria2`` …）等写完再说**，
    半成品文件不会被当成新文件反复触发任务。
+5. **大小或修改时间变过的文件重新进入候选**——下载器续传落地后仍然会刮，
+   只是被规则 1 挡住「库里已有」的那些。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +42,8 @@ logger = logging.getLogger("musicpilot.watcher")
 MAX_BATCH = 500
 # 已处理指纹上限，与 Store._MAX_SEEN 对应
 _MAX_SEEN = 200_000
+# 音乐库索引上限，防止超大曲库每次扫描都拖慢轮询
+_LIBRARY_SCAN_LIMIT = 200_000
 # 下载器的临时文件后缀：还没写完，等它变成正式文件名再说
 _PARTIAL_SUFFIXES = (
     ".part",
@@ -46,6 +56,143 @@ _PARTIAL_SUFFIXES = (
     ".temp",
     ".filepart",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryEntry:
+    """One audio file already sitting in the music library."""
+
+    path: str
+    name: str
+    size: int
+    mtime: float
+
+
+class LibraryIndex:
+    """音乐库里已有的音频文件，用来判断「这个文件已经刮过了」。
+
+    命中任意一条就算「刮过了」，都不看修改时间——写标签会改动源文件的 mtime，
+    时间戳在这里没有意义：
+
+    * **同名**：库里有同名文件。
+    * **后缀**：源文件与库内文件名（去扩展名）互为后缀，
+      ``01 - Bohemian Rhapsody.flac`` 对得上 ``01 - Queen - Bohemian Rhapsody.flac``。
+    * **顺序**：库里同扩展名的文件数与源目录一致（整批整理完、命名模板大改），
+      排序后一一对应。
+    """
+
+    def __init__(
+        self,
+        entries: list[LibraryEntry],
+        source_paths: list[str],
+        source_sizes: dict[str, int],
+    ) -> None:
+        self.entries = entries
+        self.source_paths = sorted(source_paths)
+        self.source_sizes = source_sizes
+        self.names = {entry.name for entry in entries}
+        # 只用于「库几乎是空的时候」判断文件是不是刚刮进来
+        self.largest_size = max((entry.size for entry in entries), default=0)
+        self.by_extension: dict[str, list[LibraryEntry]] = {}
+        for entry in entries:
+            self.by_extension.setdefault(Path(entry.name).suffix.lower(), []).append(entry)
+        for bucket in self.by_extension.values():
+            bucket.sort(key=lambda item: item.path)
+        self._paired: set[str] | None = None
+
+    def paired_paths(self) -> set[str]:
+        """源文件里那些「库里已经有对应文件」的路径（按顺序配对）。"""
+        if self._paired is not None:
+            return self._paired
+        paired: set[str] = set()
+        buckets = {suffix: list(bucket) for suffix, bucket in self.by_extension.items()}
+        for source in self.source_paths:
+            bucket = buckets.get(Path(source).suffix.lower())
+            if not bucket:
+                continue
+            paired.add(source)
+            bucket.pop(0)
+        self._paired = paired
+        return paired
+
+    def holds(self, path: Path, size: int) -> bool:
+        """库内是否已有对应文件；命中说明自动刮削不该再碰它。
+
+        三道判定，任一命中就算「刮过了」：
+
+        1. 同名文件：``01 - Queen - Bohemian Rhapsody.flac`` 这个名字已经在库里；
+        2. 文件名互为后缀：命名模板改过标题（``01 - Bohemian Rhapsody.flac``），
+           或反过来带上歌手前缀；
+        3. 顺序配对：库里同扩展名的文件数与源目录一致（整批整理完、模板大改），
+           这时按排序一一对应即可，不再逐条比名字；
+        4. 库几乎是空的时候：库里最大文件比它还大一点点（写标签让文件变大），
+           那是刚才刮进去的那个，不是新文件。
+        """
+        name = path.name.lower()
+        if name in self.names:
+            return True
+        stem = Path(name).stem
+        for candidate in self.names:
+            other = Path(candidate).stem
+            if len(other) < 4 or not stem:
+                continue
+            if stem.endswith(other) or other.endswith(stem):
+                return True
+        if str(path) in self.paired_paths():
+            return True
+        if size <= 0 or self.largest_size <= 0:
+            return False
+        close = max(256, int(size * 0.02))
+        if self.largest_size <= size + close:
+            bucket = max(1, len(self.source_paths))
+            if len(self.entries) * 2 < bucket:
+                return True
+        return False
+
+
+def _same_recording(source: str, entry: LibraryEntry, size: int | None) -> bool:
+    """顺序配对时的补充校验，挡住「文件被删了又重新加一个」的误判。"""
+    if not size:
+        return True
+    close = max(1024, int(size * 0.03))
+    if entry.size and abs(entry.size - size) <= close:
+        return True
+    name = Path(source).name.lower()
+    other = Path(entry.name).stem.lower()
+    stem = Path(name).stem
+    return bool(other) and (stem.endswith(other) or other.endswith(stem))
+
+
+def _index_library(
+    library: Path,
+    extensions: frozenset[str],
+    exclude_dirs: frozenset[str],
+) -> list[LibraryEntry]:
+    """Walk the music library once; only audio files are indexed."""
+    entries: list[LibraryEntry] = []
+    for dirpath, dirnames, filenames in os.walk(library, followlinks=False):
+        dirnames[:] = [
+            name for name in dirnames if name not in exclude_dirs and not name.startswith(".")
+        ]
+        for filename in filenames:
+            if Path(filename).suffix.lower() not in extensions:
+                continue
+            full = Path(dirpath) / filename
+            try:
+                stat = full.stat()
+            except OSError:
+                continue
+            entries.append(
+                LibraryEntry(
+                    path=str(full),
+                    name=filename.lower(),
+                    size=stat.st_size,
+                    mtime=stat.st_mtime,
+                )
+            )
+            if len(entries) >= _LIBRARY_SCAN_LIMIT:
+                return entries
+    return entries
 
 
 class AutoScraper:
@@ -66,6 +213,11 @@ class AutoScraper:
         self._dirty_prune = False
         # 下一轮扫描只记录存量文件、不排任务（首次开启或刚换了源目录）
         self._baseline_pending = True
+        # 音乐库里已有的文件索引，用于判断「这个文件刮过了」
+        self._library = LibraryIndex([], [], {})
+        self._library_synced = 0.0
+        # 刮削完成后登记：这些源文件已经进过库，下一轮不再当新文件
+        self._completed: dict[str, tuple[int, float]] = {}
         # 指纹攒到这个数量再落盘，一次事务写完
         self.flush_threshold = 20
 
@@ -77,6 +229,7 @@ class AutoScraper:
         self.last_error = ""
         self.detected = 0
         self.baselined = 0
+        self.in_library = 0
 
     # ---- lifecycle ------------------------------------------------------
     def start(self) -> None:
@@ -101,10 +254,9 @@ class AutoScraper:
 
     def applied(self, runtime: RuntimeSettings) -> None:
         """Reflect a settings change immediately instead of on the next poll."""
-        was = self.enabled
         self.enabled = runtime.watch_enabled
-        if runtime.watch_enabled and not was:
-            # 刚开启：源目录里的存量文件当旧文件处理，别一开就全量刮一遍
+        if runtime.watch_enabled:
+            # 开启（或又点了一次开启）：存量文件先登记一遍，别一开就全量刮
             self._baseline_pending = True
         self._last_sync = time.time()
         self.kick()
@@ -122,6 +274,7 @@ class AutoScraper:
             "detected": self.detected,
             "baselined": self.baselined,
             "tracked": len(self._seen),
+            "in_library": self.in_library,
         }
 
     def mark_processed(self, paths: list[str]) -> None:
@@ -146,6 +299,9 @@ class AutoScraper:
         self._baseline_pending = True
         self.baselined = 0
         self.detected = 0
+        self._completed.clear()
+        self._library = LibraryIndex([], [], {})
+        self._library_synced = 0.0
         try:
             self.jobs.store.clear_seen()
         except Exception as exc:  # noqa: BLE001 - resetting the UI must not crash
@@ -270,12 +426,15 @@ class AutoScraper:
             baselining = self._baseline_pending
             if not found:
                 self._baseline_pending = False
-            for audio in found:
+            candidates = [
+                audio
+                for audio in found
+                if not self._partial(audio) and not self._unstable(audio)
+            ]
+            sizes = {str(audio): self._size_of(audio) for audio in candidates}
+            await self._sync_library(candidates, sizes)
+            for audio in candidates:
                 path = str(audio)
-                if self._partial(audio):
-                    continue
-                if self._unstable(audio):
-                    continue
                 fingerprint = self._fingerprint(path)
                 if fingerprint is None:
                     continue
@@ -283,6 +442,17 @@ class AutoScraper:
                     # 刚开启 / 刚换目录：存量文件只记不刮，老文件不碰
                     self._remember(path, fingerprint)
                     self.baselined += 1
+                    continue
+                if self._in_library(audio, fingerprint):
+                    # 库里已经有这个文件：算处理过，自动刮削不再碰它
+                    self._pending.pop(path, None)
+                    if self._seen.get(path) != fingerprint:
+                        self._remember(path, fingerprint)
+                    continue
+                if path in self._completed:
+                    # 本次进程里刚刮完：写标签改了 mtime，别再当新文件
+                    self._pending.pop(path, None)
+                    self._remember(path, fingerprint)
                     continue
                 if self._seen.get(path) == fingerprint:
                     self._pending.pop(path, None)
@@ -312,6 +482,8 @@ class AutoScraper:
                 raise
             self.last_job_id = job.id
             self.detected += len(batch)
+            for key in paths:
+                self._completed[key] = self._fingerprint(key) or (0, 0.0)
             logger.info("自动刮削：已排入 %s 个新文件，任务 %s", len(batch), job.id)
             self._maybe_flush()
         except JobConflict:
@@ -320,6 +492,56 @@ class AutoScraper:
             self.last_error = str(exc)
         finally:
             self.scanning = False
+
+    async def _sync_library(
+        self,
+        source_files: list[Path] | None = None,
+        source_sizes: dict[str, int] | None = None,
+    ) -> None:
+        """Index the music library so "already scraped" survives restarts.
+
+        只看音乐库、不看时间戳：写标签会改动源文件的 mtime，而复制 / 硬链接 /
+        软链接模式下源文件又一直留在原地，指纹永远对不上它已经进过库这件事。
+        """
+        runtime = self.settings.get()
+        library = runtime.library_root
+        if not library.is_dir():
+            self._library = LibraryIndex([], [], {})
+            self.in_library = 0
+            return
+        interval = max(30.0, runtime.watch_interval)
+        if (
+            self._library_synced
+            and time.time() - self._library_synced < interval
+            and source_files is None
+        ):
+            return
+        try:
+            entries = await asyncio.to_thread(
+                _index_library,
+                library,
+                self.jobs.scraper.base.extensions,
+                self.jobs.scraper.base.excluded_directories,
+            )
+        except OSError as exc:
+            self.last_error = f"读取音乐库失败：{type(exc).__name__}: {exc}"
+            return
+        self._library = LibraryIndex(
+            entries,
+            [str(path) for path in (source_files or [])],
+            source_sizes or {},
+        )
+        self._library_synced = time.time()
+        self.in_library = len(entries)
+
+    def _in_library(self, path: Path, fingerprint: tuple[int, float]) -> bool:
+        """True when the library already holds this recording."""
+        if path.name.lower() in self._library.names:
+            return True
+        paired = self._library.paired_paths()
+        if str(path) in paired:
+            return True
+        return self._library.holds(path, fingerprint[0])
 
     def _maybe_flush(self, threshold: int = 50) -> None:
         """Write buffered fingerprints once they are worth a transaction."""
@@ -331,6 +553,13 @@ class AutoScraper:
         """Downloader leftovers: the real file may still be on its way."""
         name = path.name.lower()
         return any(name.endswith(suffix) for suffix in _PARTIAL_SUFFIXES)
+
+    @staticmethod
+    def _size_of(path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
 
     @staticmethod
     def _fingerprint(path: str) -> tuple[int, float] | None:
