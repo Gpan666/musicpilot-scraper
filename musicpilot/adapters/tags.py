@@ -193,3 +193,122 @@ async def apply_tags(
         lyrics_enabled=lyrics_enabled,
         track_number=track_number,
     )
+
+
+# ---------------------------------------------------------------- 音乐库补全
+# 音乐库的「查漏补缺」只改标签：不动文件位置，不复制，不建硬链接/软链接。
+# 下面这条窄路只做一件事——把指定字段写进「空着的槽位」，已有的值一个都不覆盖。
+
+_MISSING_FIELDS = frozenset(
+    {"title", "artist", "album", "album_artist", "year", "track_number", "disc_number", "lyrics"}
+)
+_EASY_KEYS = {
+    "title": "title",
+    "artist": "artist",
+    "album": "album",
+    "album_artist": "albumartist",
+    "year": "date",
+    "track_number": "tracknumber",
+    "disc_number": "discnumber",
+}
+
+
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    items = value if isinstance(value, (list, tuple)) else [value]
+    for item in items:
+        text = getattr(item, "text", item)
+        if isinstance(text, (list, tuple)):
+            text = text[0] if text else ""
+        if text is not None and str(text).strip():
+            return True
+    return False
+
+
+def _existing(audio: Any, key: str) -> bool:
+    try:
+        return _has_value(audio.get(key))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def _write_lyrics_sync(path: Path, text: str) -> bool:
+    """歌词没有 easy 键，得按后端各自的写法来：ID3 用 USLT，Vorbis 用 lyrics。"""
+    try:
+        audio = MutagenFile(str(path))
+    except Exception:  # noqa: BLE001
+        return False
+    if audio is None:
+        return False
+    try:
+        if type(audio).__name__ == "MP3" or type(getattr(audio, "tags", None)).__name__.startswith("ID3"):
+            from mutagen.id3 import USLT
+
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags.delall("USLT")
+            audio.tags.add(USLT(encoding=3, lang="chi", desc="", text=text))
+        else:
+            audio["lyrics"] = [text]
+        audio.save()
+        return True
+    except Exception:  # noqa: BLE001 - 歌词写不进去不影响其它字段
+        return False
+    finally:
+        _close(audio)
+
+
+def write_missing_tags_sync(
+    path: Path, wanted: dict[str, Any], *, write_lyrics: bool = False
+) -> list[str]:
+    """只写文件里还没有的字段，返回真正写进去的字段名。
+
+    ``wanted`` 只认 title/artist/album/album_artist/year/track_number/
+    disc_number，其余键忽略。写失败一律当「没写」，不会为了写标签去碰文件位置。
+    """
+    wanted = {k: v for k, v in wanted.items() if k in _MISSING_FIELDS and v not in (None, "")}
+    if not wanted:
+        return []
+    try:
+        audio = MutagenFile(str(path), easy=True)
+    except Exception:  # noqa: BLE001 - 坏文件不该让整批任务失败
+        return []
+    if audio is None:
+        return []
+    written: list[str] = []
+    try:
+        if audio.tags is None:
+            try:
+                audio.add_tags()
+            except Exception:  # noqa: BLE001
+                return []
+        for name, value in wanted.items():
+            if name == "lyrics":
+                continue
+            key = _EASY_KEYS[name]
+            if _existing(audio, key):
+                continue
+            try:
+                audio[key] = [str(value)]
+                written.append(name)
+            except (KeyError, TypeError, ValueError):
+                continue
+        if written:
+            audio.save()
+    except Exception:  # noqa: BLE001 - 写标签是尽力而为
+        return []
+    finally:
+        _close(audio)
+    lyrics = str(wanted.get("lyrics") or "").strip()
+    if lyrics and write_lyrics and _write_lyrics_sync(path, lyrics):
+        written.append("lyrics")
+    return written
+
+
+async def write_missing_tags(
+    path: Path, wanted: dict[str, Any], *, write_lyrics: bool = False
+) -> list[str]:
+    return await asyncio.to_thread(
+        write_missing_tags_sync, path, wanted, write_lyrics=write_lyrics
+    )

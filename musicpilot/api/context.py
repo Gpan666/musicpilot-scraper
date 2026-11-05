@@ -13,6 +13,7 @@ from musicpilot.adapters.metadata.service import MetadataService
 from musicpilot.adapters.store import Store
 from musicpilot.config import Settings
 from musicpilot.services.jobs import JobManager
+from musicpilot.services.library import LibraryService
 from musicpilot.services.scraper import ScraperService
 from musicpilot.services.settings_service import SettingsService
 from musicpilot.services.watcher import AutoScraper
@@ -30,6 +31,7 @@ class AppContext:
     scraper: ScraperService
     jobs: JobManager
     watcher: AutoScraper
+    library: LibraryService
     secret: str
     auth_enabled: bool
     started_at: float
