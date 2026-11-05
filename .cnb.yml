@@ -8,5 +8,4 @@
 
 include:
   - .cnb/github-sync.yml
-  - .cnb/docker.yml
   - .cnb/docker-hub.yml
