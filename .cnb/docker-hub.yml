@@ -86,9 +86,8 @@ main:
     - name: docker-hub-latest
       <<: *docker-hub-image
       imports:
-        # 文件不存在时整段流水线跳过，不比其它流水线先失败
-        - path: https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/docker-hub.yml
-          ignoreError: true
+        # 修改这里：直接写字符串链接
+        - https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/docker-hub.yml
       stages: *docker-hub-stages
 
 $:
@@ -96,6 +95,6 @@ $:
     - name: docker-hub-tag
       <<: *docker-hub-image
       imports:
-        - path: https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/docker-hub.yml
-          ignoreError: true
+        # 修改这里：直接写字符串链接
+        - https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/docker-hub.yml
       stages: *docker-hub-stages
