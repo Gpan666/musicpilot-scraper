@@ -81,7 +81,7 @@ docker compose up -d --build
 - **界面与字体**：按 [Miuix](https://github.com/compose-miuix-ui/miuix) 配色（亮 `#3482FF` / 暗 `#277AF7`）+ 小米 [MiSans](https://hyperos.mi.com/font/) 可变字体（`clamp()` 自适应），默认夜间模式。
 - **目录选择器**：源 / 库目录「浏览…」点选，后端限定在 `MP_BROWSABLE_ROOTS` 内。
 - **登录与注册**：认证常开，首次注册管理员（PBKDF2 加盐 + HMAC 会话 Cookie + 登录限速），之后为登录页；公网请套 HTTPS。
-- **自动刮削**：开启后监控源目录，发现新文件自动排任务（轮询，非 inotify，适配 NFS / SMB / FUSE），带「稳定等待」避免刮削未下完文件；「把现有文件标记为已处理」用于切换目录时避免全量重刮。
+- **自动刮削**：开启后监控源目录，**只处理开启之后新出现的文件**——开启那一刻的存量文件只登记不刮削；判定统一用（路径 + 大小 + 修改时间）落库，重启不会重刮；下载器的 `.part` / `.!qB` / `.aria2` 临时文件不触发；轮询而非 inotify（适配 NFS / SMB / FUSE），大小或修改时间还在变的文件先等一轮再刮。
 
 ## 7. API 一览
 

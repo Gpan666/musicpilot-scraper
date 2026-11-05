@@ -56,8 +56,9 @@ def test_watch_scrapes_new_files(client: TestClient, workspace: dict[str, Any]) 
 
 
 def test_watch_does_not_repeat_a_file(client: TestClient, workspace: dict[str, Any]) -> None:
-    make_audio(workspace["source"] / "02 - Queen - Love of My Life.flac")
     _enable_watch(client)
+    _wait_for(lambda: client.get("/api/watch").json()["last_scan"], timeout=20)
+    make_audio(workspace["source"] / "02 - Queen - Love of My Life.flac")
 
     def auto_count() -> int:
         jobs = client.get("/api/jobs?limit=20").json()["jobs"]
@@ -72,12 +73,11 @@ def test_watch_does_not_repeat_a_file(client: TestClient, workspace: dict[str, A
 def test_watch_reset_forgets_seen_files(client: TestClient, workspace: dict[str, Any]) -> None:
     make_audio(workspace["source"] / "03 - Queen - Somebody to Love.flac")
     _enable_watch(client)
-    _wait_for(
-        lambda: client.get("/api/watch").json()["detected"] >= 1,
-        timeout=20,
-    )
+    # 首次扫描把现有文件当成老文件登记，不排任务、不计入 detected
+    _wait_for(lambda: client.get("/api/watch").json()["tracked"] >= 1, timeout=20)
     reset = client.post("/api/watch/reset").json()
     assert reset["tracked"] == 0
+    assert reset["detected"] == 0
 
 
 def test_manual_preview_skips_auto_waits(client: TestClient, workspace: dict[str, Any]) -> None:
@@ -89,3 +89,64 @@ def test_manual_preview_skips_auto_waits(client: TestClient, workspace: dict[str
     if preview.status_code == 202:
         job = wait_for_job(client, preview.json()["id"])
         assert job["status"] == "completed"
+
+
+def _auto_jobs(client: TestClient) -> list[dict[str, Any]]:
+    jobs = client.get("/api/jobs?limit=50").json()["jobs"]
+    return [job for job in jobs if job["kind"] == "auto"]
+
+
+def test_watch_does_not_scrape_existing_files(client: TestClient, workspace: dict[str, Any]) -> None:
+    """开启监控时源目录里的老文件只登记、不刮削。"""
+    for index in range(3):
+        make_audio(workspace["source"] / f"old-{index}.flac", b"old-payload")
+    time.sleep(0.2)
+    _enable_watch(client)
+
+    _wait_for(lambda: client.get("/api/watch").json()["baselined"] >= 3, timeout=20)
+    time.sleep(2)
+    assert _auto_jobs(client) == []
+    assert client.get("/api/watch").json()["tracked"] == 3
+
+
+def test_seen_files_survive_a_restart(workspace: dict[str, Any]) -> None:
+    """指纹落库：重启后既不会重刮老文件，也不会漏掉新文件。"""
+    from fastapi.testclient import TestClient
+
+    from musicpilot.app import create_app
+
+    make_audio(workspace["source"] / "old-01.flac", b"old")
+    time.sleep(0.2)
+
+    with TestClient(create_app()) as first:
+        first.post(
+            "/api/auth/register",
+            json={"username": "tester", "password": "test-password-123"},
+        )
+        _enable_watch(first)
+        _wait_for(lambda: first.get("/api/watch").json()["tracked"] >= 1, timeout=20)
+    assert _auto_jobs(first) == []
+
+    with TestClient(create_app()) as second:
+        second.post(
+            "/api/auth/login",
+            json={"username": "tester", "password": "test-password-123"},
+        )
+        payload = second.get("/api/watch").json()
+        assert payload["enabled"] is True
+        _wait_for(lambda: second.get("/api/watch").json()["tracked"] >= 1, timeout=20)
+        time.sleep(2)
+        assert _auto_jobs(second) == [], "重启后老文件不应被重新刮削"
+
+        make_audio(workspace["source"] / "new-01.flac", b"new")
+        _wait_for(lambda: _auto_jobs(second), timeout=20)
+        assert len(_auto_jobs(second)) == 1
+
+
+def test_watch_ignores_downloader_leftovers(client: TestClient, workspace: dict[str, Any]) -> None:
+    """半成品文件名（.part / .!qB …）先不碰，避免抢着刮还在下载的文件。"""
+    _enable_watch(client)
+    make_audio(workspace["source"] / "05 - Queen - Innuendo.flac.part")
+    time.sleep(3)
+    assert _auto_jobs(client) == []
+    assert client.get("/api/watch").json()["detected"] == 0
