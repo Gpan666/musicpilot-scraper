@@ -22,7 +22,7 @@ ProgressCallback = Callable[[int, int, int, str, str], None]
 # Human choices made on the preview page: {source path: metadata overrides}.
 ChoiceMap = dict[str, dict[str, Any]]
 
-_PICK_FIELDS = ("title", "artist", "album", "year", "track_number")
+_PICK_FIELDS = ("title", "artist", "album", "album_artist", "year", "track_number")
 
 
 def _picked_metadata(choice: dict[str, Any]) -> TrackMetadata:
@@ -43,7 +43,8 @@ def _picked_metadata(choice: dict[str, Any]) -> TrackMetadata:
     source = str(choice.get("source") or "manual").strip() or "manual"
     values["source"] = source
     values["external_id"] = str(choice.get("external_id") or "") or None
-    values["album_artist"] = values.get("artist")
+    album_artist = str(choice.get("album_artist") or "").strip()
+    values["album_artist"] = album_artist or values.get("artist")
     values["cover_url"] = str(choice.get("cover_url") or "") or None
     return TrackMetadata(**values)
 
@@ -253,11 +254,13 @@ class ScraperService:
             title=meta.title,
             artist=meta.artist,
             album=meta.album,
+            album_artist=meta.album_artist or meta.artist,
             year=meta.year,
             track_number=meta.track_number,
             local_title=local.title,
             local_artist=local.artist,
             local_album=local.album,
+            local_album_artist=local.album_artist or local.artist,
             local_year=local.year,
             local_track_number=local.track_number,
             cover_url=meta.cover_url,
