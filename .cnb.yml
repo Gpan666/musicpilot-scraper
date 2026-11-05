@@ -28,16 +28,16 @@ main:
             elif [ "$HTTP_CODE" = "200" ]; then
               echo "GitHub 仓库已存在，跳过创建"
             else
-              # 其它状态（401 令牌失效 / 403 权限不足 / 429 限流）直接失败，
-              # 避免把"查不到"误判成"不存在"从而漏建仓库，导致后续同步报 Repository not found
               echo "查询 GitHub 仓库失败，HTTP ${HTTP_CODE}:" >&2
               echo "$RESP" | head -n -1 >&2
               exit 1
             fi
+
         - name: sync to github after PR merged
           image: tencentcom/git-sync
           settings:
-            target_url: https://github.com/${GITHUB_USERNAME}/${REPO_NAME}.git
+            # 👇 这里必须用内置变量 ${CNB_REPO_NAME}，或者直接写死仓库名
+            target_url: https://github.com/${GITHUB_USERNAME}/${CNB_REPO_NAME}.git
             auth_type: https
             username: ${GITHUB_USERNAME}
             password: ${GITHUB_ACCESS_TOKEN}
