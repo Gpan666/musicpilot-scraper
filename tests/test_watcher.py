@@ -165,7 +165,9 @@ def test_watch_skips_files_already_in_library(
     _wait_for(lambda: client.get("/api/watch").json()["in_library"] >= 1, timeout=20)
     # 清掉指纹模拟「旧版本升级 / 手动 reset」后的重启，此时只能靠库内文件判断
     client.post("/api/watch/reset")
-    time.sleep(4)
+    time.sleep(1)
+    _wait_for(lambda: client.get("/api/watch").json()["baselined"] >= 1, timeout=20)
+    time.sleep(1)
     jobs = client.get("/api/jobs?limit=20").json()["jobs"]
     assert [job["kind"] for job in jobs] == [], "库里已有的文件不应触发自动刮削"
     assert source.stat().st_size != in_library.stat().st_size
@@ -180,7 +182,9 @@ def test_watch_skips_library_match_by_name_suffix(
     _enable_watch(client)
     _wait_for(lambda: client.get("/api/watch").json()["in_library"] >= 1, timeout=20)
     client.post("/api/watch/reset")
-    time.sleep(4)
+    time.sleep(1)
+    _wait_for(lambda: client.get("/api/watch").json()["baselined"] >= 1, timeout=20)
+    time.sleep(1)
     assert client.get("/api/jobs?limit=20").json()["jobs"] == []
 
 
@@ -220,3 +224,46 @@ def test_job_items_carry_chinese_brief(client: TestClient, workspace: dict[str, 
         assert "inode" not in brief and "OSError" not in brief
         assert "netease" not in brief and "musicbrainz" not in brief
         assert item["mode_label"] == "复制"
+
+
+def test_watch_still_scrapes_a_new_song_when_library_is_not_empty(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """库里已经有别的歌，不能因此把新歌当「已经刮过」跳过。"""
+    make_audio(workspace["library"] / "A Night at the Opera" / "Queen" / "01 - Queen - old.flac")
+    _enable_watch(client)
+    # 源目录本来是空的，等第一轮扫描（基线）走完
+    _wait_for(lambda: client.get("/api/watch").json()["last_scan"], timeout=20)
+    time.sleep(1)
+    make_audio(workspace["source"] / "02 - Queen - Love of My Life.flac", b"brand-new-song")
+    job = _wait_for(lambda: (_auto_jobs(client) or [None])[0], timeout=20)
+    items = client.get(f"/api/jobs/{job['id']}/items").json()["items"]
+    assert len(items) == 1
+    assert items[0]["status"] == "done"
+
+
+def test_watch_skips_new_file_already_in_library(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """源目录里新增，但库里已经有同一首：跳过，不再刮第二遍。"""
+    _enable_watch(client)
+    _wait_for(lambda: client.get("/api/watch").json()["last_scan"], timeout=20)
+    time.sleep(1)
+    make_audio(workspace["source"] / "01 - Queen - Bohemian Rhapsody.flac", b"source-copy")
+    make_audio(
+        workspace["library"] / "A Night at the Opera" / "Queen" / "01 - Queen - Bohemian Rhapsody.flac",
+        content=b"already-in-library",
+    )
+    time.sleep(3)
+    assert _auto_jobs(client) == [], "库里已有的新文件不应触发刮削"
+    # 等监控完成这一轮，库里已有的新文件要被登记为「已处理」，不再反复判定
+    _wait_for(lambda: client.get("/api/watch").json()["tracked"] >= 1, timeout=20)
+
+
+def test_watch_forgets_deleted_source_files(client: TestClient, workspace: dict[str, Any]) -> None:
+    """源目录里被删掉的文件不再占着已处理记录。"""
+    path = make_audio(workspace["source"] / "gone.flac", b"gone")
+    _enable_watch(client)
+    _wait_for(lambda: client.get("/api/watch").json()["tracked"] >= 1, timeout=20)
+    path.unlink()
+    _wait_for(lambda: client.get("/api/watch").json()["tracked"] == 0, timeout=20)

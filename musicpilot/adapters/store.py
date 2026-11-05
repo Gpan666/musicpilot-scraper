@@ -306,6 +306,25 @@ class Store:
             ).fetchall()
         return {row["status"]: row["n"] for row in rows}
 
+    def delete_job(self, job_id: str) -> bool:
+        """删掉一条任务记录及其全部明细，返回是否真的删到了东西。"""
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM job_items WHERE job_id=?", (job_id,))
+            cursor = connection.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        return cursor.rowcount > 0
+
+    def delete_finished_jobs(self, *, keep_active: bool = True) -> int:
+        """清空任务记录：默认不动正在跑 / 排队中的那条。"""
+        self.initialize()
+        clause = "WHERE status NOT IN ('pending','running')" if keep_active else ""
+        with self._connect() as connection:
+            connection.execute(
+                f"DELETE FROM job_items WHERE job_id IN (SELECT id FROM jobs {clause})"  # noqa: S608
+            )
+            cursor = connection.execute(f"DELETE FROM jobs {clause}")  # noqa: S608
+        return cursor.rowcount
+
     def recent_done(self, limit: int = 8) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -345,6 +364,13 @@ class Store:
             )
             if prune:
                 self._prune_seen(connection, limit)
+
+    def forget_seen(self, paths: list[str]) -> None:
+        """Drop fingerprints of files that no longer exist in the source directory."""
+        if not paths:
+            return
+        with self._connect() as connection:
+            connection.executemany("DELETE FROM watch_seen WHERE path=?", [(p,) for p in paths])
 
     def clear_seen(self) -> None:
         self.initialize()

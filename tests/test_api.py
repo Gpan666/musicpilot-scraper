@@ -239,3 +239,46 @@ def test_store_migrates_old_job_items(tmp_path: Any) -> None:
     assert items[0]["local_title"] == "旧标题"
     assert items[0]["candidates"] == [{"score": 0.5}]
     assert store.list_items("old")[0]["candidates"] == []
+
+
+def test_default_template_groups_by_album_and_album_artist(client: TestClient) -> None:
+    """默认落库结构：专辑名 → 专辑歌手 → 歌曲文件。"""
+    settings = client.get("/api/settings").json()
+    assert settings["settings"]["naming_template"].startswith("{album}/{album_artist}/")
+    assert "专辑歌手" in settings["example_target"] or "/" in settings["example_target"]
+
+
+def test_delete_job_removes_items(client: TestClient, workspace: dict[str, Any]) -> None:
+    make_audio(workspace["source"] / "07 - Queen - Hammer to Fall.flac")
+    created = client.post("/api/jobs", json={"kind": "scrape", "paths": []})
+    job_id = created.json()["id"]
+    wait_for_job(client, job_id)
+    assert client.get(f"/api/jobs/{job_id}/items").json()["items"]
+
+    removed = client.delete(f"/api/jobs/{job_id}")
+    assert removed.status_code == 200, removed.text
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}/items").json()["items"] == []
+    assert job_id not in [job["id"] for job in client.get("/api/jobs").json()["jobs"]]
+
+
+def test_delete_missing_job_returns_404(client: TestClient) -> None:
+    assert client.delete("/api/jobs/does-not-exist").status_code == 404
+
+
+def test_clear_jobs_keeps_running_job(client: TestClient, workspace: dict[str, Any]) -> None:
+    """清空记录只删已经结束的，正在跑的留着。"""
+    make_audio(workspace["source"] / "08 - Queen - Friends Will Be Friends.flac")
+    first = client.post("/api/jobs", json={"kind": "scrape", "paths": []}).json()["id"]
+    wait_for_job(client, first)
+
+    second = make_audio(workspace["source"] / "09 - Queen - One Vision.flac")
+    preview = client.post("/api/jobs", json={"kind": "preview", "paths": [str(second)]})
+    if preview.status_code == 202:
+        wait_for_job(client, preview.json()["id"])
+
+    cleared = client.delete("/api/jobs").json()
+    assert cleared["ok"] is True
+    assert cleared["removed"] >= 1
+    remaining = client.get("/api/jobs").json()["jobs"]
+    assert all(job["status"] in {"pending", "running"} for job in remaining)
