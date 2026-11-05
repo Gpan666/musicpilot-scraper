@@ -4,10 +4,16 @@ services:
       context: .
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-    image: musicpilot-scraper:local
+    # 官方/自建镜像二选一：拉现成的把上面 build 段注释掉，改 image；本地构建保留 image 作为标签名
+    image: ${MP_IMAGE:-musicpilot-scraper:local}
     container_name: musicpilot-scraper
+    # 容器内进程以 PUID:PGID 运行；挂载目录写不进去时改成宿主的 uid/gid（NAS 常见，id 用户名 可查）
+    user: "0:0"
     environment:
-      TZ: Asia/Shanghai
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      UMASK: ${UMASK:-022}
+      TZ: ${TZ:-Asia/Shanghai}
       MP_LOG_LEVEL: ${MP_LOG_LEVEL:-INFO}
       MP_ADMIN_USERNAME: ${MP_ADMIN_USERNAME:-admin}
       # 登录认证始终开启；首次访问在网页上注册管理员账号。此项仅用于旧部署引导
@@ -28,6 +34,8 @@ services:
       MP_CONFIDENCE_THRESHOLD: ${MP_CONFIDENCE_THRESHOLD:-0.62}
       MP_MUSICBRAINZ_USER_AGENT: "${MP_MUSICBRAINZ_USER_AGENT:-MusicPilot-Scraper/2.0 (self-hosted personal use)}"
       MP_HTTP_PROXY: ${MP_HTTP_PROXY:-}
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "${MP_HTTP_PORT:-8000}:8000"
     volumes:
