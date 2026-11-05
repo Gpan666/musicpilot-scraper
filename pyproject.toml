@@ -29,8 +29,16 @@ dev = [
 [project.scripts]
 musicpilot = "musicpilot.__main__:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["musicpilot*"]
+
+# 前端是原生 HTML/JS、无构建步骤：构建时由 scripts/sync_web.py 拷进 musicpilot/web/，
+# 随 wheel 一起分发，装到哪都自带界面（源码树里仍用仓库根的 web/）
+[tool.setuptools.package-data]
+musicpilot = ["web/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
