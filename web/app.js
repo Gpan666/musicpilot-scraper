@@ -57,7 +57,7 @@ const state = {
   plan: { jobId: null, items: [], choices: new Map(), filter: 'all' },
   library: {
     loaded: false, tracks: [], stats: {}, sources: [], libraryDir: '', warnings: [],
-    loading: false, filter: 'all', query: '', open: null,
+    loading: false, filter: 'all', query: '',
     scrape: { path: null, source: '', results: [], loading: false, query: {} },
   },
   drawer: { jobId: null, items: [] },
@@ -461,40 +461,28 @@ function libraryVisible() {
   });
 }
 
-/** 横向标签：一首歌一个标签，滚到哪算哪。 */
-function libraryTag(track) {
-  const open = state.library.open === track.path;
+/** 横向歌曲条：一行一首，小封面 + 主信息 + 歌词预览；点一下弹详情卡片。 */
+function libraryRow(track) {
   const cover = track.cover_url
     ? `<img src="${esc(track.cover_url)}" alt="" loading="lazy" data-lib-cover>`
     : '<span class="lib-cover-fallback">♪</span>';
-  const meta = (label, value, extra = '') => `<div class="lib-meta">
-      <span class="lib-meta-key">${esc(label)}</span>
-      <span class="lib-meta-value${value ? '' : ' blank'}" ${extra}>${esc(value || '—')}</span></div>`;
+  const sub = [track.artist, track.album].filter(Boolean).join(' · ');
   const lyrics = track.has_lyrics
-    ? `<div class="lib-lyrics" title="${esc(track.lyrics_preview)}">${esc(track.lyrics_preview || '（歌词为空）')}</div>`
-    : '<div class="lib-lyrics blank">无歌词</div>';
-  return `<article class="lib-tag${open ? ' open' : ''}${track.complete ? '' : ' gap'}" data-lib="${esc(track.path)}">
-    <div class="lib-cover">${cover}</div>
-    <div class="lib-body">
-      <div class="lib-title-row">
-        <span class="lib-title" title="${esc(track.path)}">${esc(track.title || track.name)}</span>
-        ${track.complete ? '' : '<span class="lib-flag">待补全</span>'}
-      </div>
-      ${meta('歌手', track.artist)}
-      ${meta('专辑', track.album)}
-      ${meta('专辑轨号', track.track_number)}
-      ${meta('专辑艺术家', track.album_artist)}
-      ${lyrics}
-      <div class="lib-foot">
-        <span class="lib-dir mono" title="${esc(track.relative_dir)}">${esc(track.relative_dir || '（库根目录）')}</span>
-        <span class="lib-expand">${open ? '收起' : '展开详情'}</span>
-      </div>
+    ? `<div class="lib-row-lyrics" title="${esc(track.lyrics_preview)}">${esc(track.lyrics_preview || '（歌词为空）')}</div>`
+    : '<div class="lib-row-lyrics blank">无歌词</div>';
+  return `<article class="lib-row${track.complete ? '' : ' gap'}" data-lib="${esc(track.path)}"
+      title="${esc(track.path)}" role="button" tabindex="0">
+    <div class="lib-row-cover">${cover}</div>
+    <div class="lib-row-main">
+      <div class="lib-row-title">${esc(track.title || track.name)}</div>
+      <div class="lib-row-sub${sub ? '' : ' blank'}">${esc(sub || '歌手 / 专辑待补全')}</div>
     </div>
-    ${open ? libraryDetail(track) : ''}
+    ${track.complete ? '' : '<span class="lib-flag">待补全</span>'}
+    ${lyrics}
   </article>`;
 }
 
-/** 点击后展开的卡片详情：完整元数据 + 歌词全文 + 操作按钮。 */
+/** 弹出式卡片详情：完整元数据 + 歌词全文 + 操作按钮。 */
 function libraryDetail(track) {
   const row = (label, value) => `<div class="lib-detail-row">
       <span class="lib-meta-key">${esc(label)}</span>
@@ -530,36 +518,36 @@ function renderLibraryTags() {
   const visible = libraryVisible();
   const box = $('lib-tags');
   if (!box) return;
-  box.innerHTML = visible.map(libraryTag).join('')
+  box.innerHTML = visible.map(libraryRow).join('')
     || '<div class="empty">当前筛选条件下没有曲目</div>';
   box.querySelectorAll('img[data-lib-cover]').forEach((img) => {
     img.addEventListener('error', () => img.classList.add('hidden'), { once: true });
   });
   box.querySelectorAll('[data-lib]').forEach((node) => {
-    node.addEventListener('click', (event) => {
-      if (event.target.closest('button')) return;
-      toggleLibraryCard(node.dataset.lib);
+    node.addEventListener('click', () => openLibraryDetail(node.dataset.lib));
+    node.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openLibraryDetail(node.dataset.lib);
     });
-  });
-  box.querySelectorAll('[data-lib-scrape]').forEach((button) => {
-    button.addEventListener('click', () => openScrapeDialog(button.dataset.libScrape));
-  });
-  box.querySelectorAll('[data-lib-fill]').forEach((button) => {
-    button.addEventListener('click', () => fillOne(button.dataset.libFill));
   });
 }
 
-async function toggleLibraryCard(path) {
-  const wasOpen = state.library.open === path;
-  state.library.open = wasOpen ? null : path;
-  renderLibraryTags();
-  if (wasOpen) return;
+/** 点曲目：弹详情卡片；歌词按需懒加载，按钮在卡片打开后再绑定。 */
+async function openLibraryDetail(path) {
   const track = (state.library.tracks || []).find((row) => row.path === path);
-  if (!track || track._lyrics !== undefined || !track.has_lyrics) return;
+  if (!track) return;
+  openModal('歌曲详情', libraryDetail(track));
+  const body = $('modal-body');
+  const scrape = body.querySelector('[data-lib-scrape]');
+  if (scrape) scrape.addEventListener('click', () => openScrapeDialog(scrape.dataset.libScrape));
+  const fill = body.querySelector('[data-lib-fill]');
+  if (fill) fill.addEventListener('click', () => fillOne(fill.dataset.libFill));
+  if (!track.has_lyrics || track._lyrics !== undefined) return;
   try {
     const detail = await api(`/api/library/detail?path=${encodeURIComponent(path)}`);
     track._lyrics = detail.lyrics || '';
-    if (state.library.open === path) renderLibraryTags();
+    if ($('modal-title').textContent === '歌曲详情') openModal('歌曲详情', libraryDetail(track));
   } catch (error) { toast(error.message, true); }
 }
 
@@ -600,7 +588,7 @@ async function renderLibrary() {
     </div>
     <div class="panel">
       <div class="panel-head">
-        <div><h2>音乐库里的全部曲目</h2>
+        <div><h2>全部曲目</h2>
           <p class="mono small">${esc(store.libraryDir)}${stats.tracks ? ` · 封面 ${stats.with_cover} 首 · 歌词 ${stats.with_lyrics} 首` : ''}</p></div>
         <div class="btn-row">
           <button class="ghost-btn" id="lib-reload">重新扫描</button>
@@ -614,14 +602,14 @@ async function renderLibrary() {
       </div>
       <p class="small muted" style="margin:0 0 10px">可用的刮削来源：${sourceChips || '—'}（在「刮削设置 → 标签与元数据」里勾选）</p>
       <div id="lib-tags" class="lib-tags"></div>
-      <p class="small muted" style="margin:10px 0 0">点标签展开卡片详情；「手动刮削」可以选平台搜索并看到 1–10 的匹配度。</p>
+      <p class="small muted" style="margin:10px 0 0">点曲目弹出详情卡片；「手动刮削」可以选平台搜索并看到 1–10 的匹配度。</p>
     </div>`;
 
   renderLibraryTags();
   const count = $('lib-count');
   if (count) count.textContent = `显示 ${libraryVisible().length} / ${store.tracks.length} 首`;
 
-  $('lib-reload').addEventListener('click', () => { store.loaded = false; store.open = null; renderLibrary(); });
+  $('lib-reload').addEventListener('click', () => { store.loaded = false; renderLibrary(); });
   $('lib-auto').addEventListener('click', autoFillLibrary);
   document.querySelectorAll('[data-lib-filter]').forEach((button) => {
     button.addEventListener('click', () => {
