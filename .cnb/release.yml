@@ -105,18 +105,40 @@ $:
             API_VERSION="2022-11-28"
             AUTH="Authorization: Bearer ${GITHUB_ACCESS_TOKEN}"
 
-            python3 - "$TAG" "$VERSION" <<'PY' > .release/payload.json
-            import json, pathlib, sys
+            # 构造 JSON：优先 jq，其次 python3，再次 python；都不在就报错。
+            # 不用 heredoc：YAML 块标量要求每行都缩进，而 heredoc 结束符必须顶格，两者冲突。
+            # 也不用多行 "... " 续行：YAML 会把续行折成空格，Python 语句被打断。
+            build_payload_with_jq() {
+              jq -n --arg tag "$TAG" --arg version "$VERSION" --arg body "$(cat .release/notes.md)" \
+                '{tag_name:$tag, name:("MusicPilot Scraper "+$version), body:$body, draft:false, prerelease:($version|contains("-"))}' > .release/payload.json
+            }
+
+            build_payload_with_python3() {
+              PY_CODE='import json, pathlib, sys
             tag, version = sys.argv[1], sys.argv[2]
             notes = pathlib.Path(".release/notes.md").read_text(encoding="utf-8")
-            print(json.dumps({
-                "tag_name": tag,
-                "name": f"MusicPilot Scraper {version}",
-                "body": notes,
-                "draft": False,
-                "prerelease": "-" in version,
-            }, ensure_ascii=False))
-            PY
+            print(json.dumps({"tag_name": tag, "name": "MusicPilot Scraper " + version, "body": notes, "draft": False, "prerelease": "-" in version}, ensure_ascii=False))'
+              python3 -c "$PY_CODE" "$TAG" "$VERSION" > .release/payload.json
+            }
+
+            build_payload_with_python() {
+              PY_CODE='import json, pathlib, sys
+            tag, version = sys.argv[1], sys.argv[2]
+            notes = pathlib.Path(".release/notes.md").read_text(encoding="utf-8")
+            print(json.dumps({"tag_name": tag, "name": "MusicPilot Scraper " + version, "body": notes, "draft": False, "prerelease": "-" in version}, ensure_ascii=False))'
+              python -c "$PY_CODE" "$TAG" "$VERSION" > .release/payload.json
+            }
+
+            if command -v jq >/dev/null 2>&1; then
+              build_payload_with_jq
+            elif command -v python3 >/dev/null 2>&1; then
+              build_payload_with_python3
+            elif command -v python >/dev/null 2>&1; then
+              build_payload_with_python
+            else
+              echo "ERROR: 运行环境缺少 jq / python3 / python，无法构造 GitHub Release JSON" >&2
+              exit 1
+            fi
 
             # 已存在就 PATCH 更新，不存在才 POST 创建，重跑不会报 422
             CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
