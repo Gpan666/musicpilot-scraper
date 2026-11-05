@@ -146,32 +146,43 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .divider { height: 1px; background: var(--divider); margin: 16px 0; }
 
 /* ---------- shell ---------- */
+/* 侧边栏可折叠：展开 248px / 折叠成 76px 图标栏 / 窄屏折叠成覆盖式抽屉。
+ * 只有轨道宽度在变，颜色、字体、圆角全部沿用上面的变量。 */
 .app-shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   min-height: 100vh;
+  transition: grid-template-columns var(--transition);
 }
+.app-shell.nav-collapsed { grid-template-columns: 76px minmax(0, 1fr); }
+
 .sidebar {
   position: sticky;
   top: 0;
   height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 26px 16px 18px;
+  padding: 20px 12px 16px;
   background: var(--surface);
   border-right: 1px solid var(--divider);
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
+  transition: padding var(--transition), transform var(--transition);
 }
-.brand { display: flex; align-items: center; gap: 12px; padding: 0 10px 24px; }
+.sidebar-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 20px; }
+.brand { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 0 4px; }
 .brand-mark { width: 40px; height: 40px; border-radius: 13px; flex: none; }
+.brand-text { min-width: 0; }
 .brand-title {
   font-size: var(--fs-headline);
   font-weight: var(--wght-display);
   font-variation-settings: 'wght' var(--wght-display);
   letter-spacing: .2px;
+  white-space: nowrap;
 }
-.brand-sub { font-size: var(--fs-footnote); color: var(--text-3); }
+.brand-sub { font-size: var(--fs-footnote); color: var(--text-3); white-space: nowrap; }
+#nav-toggle { flex: none; }
 .nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .nav-group {
   padding: 18px 12px 7px;
@@ -180,8 +191,10 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
   font-weight: var(--wght-button);
   font-variation-settings: 'wght' var(--wght-button);
   letter-spacing: 1.2px;
+  white-space: nowrap;
 }
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -212,7 +225,10 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
   text-align: center;
   font-size: var(--fs-headline);
   flex: none;
+  display: grid;
+  place-items: center;
 }
+.nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-foot { padding-top: 16px; border-top: 1px solid var(--divider); }
 .user-chip {
   display: flex;
@@ -233,8 +249,25 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
   text-transform: uppercase;
   flex: none;
 }
-.user-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .foot-note { padding: 10px 8px 0; font-size: var(--fs-tiny); color: var(--text-3); }
+
+/* 折叠成图标栏：文字全部收起，图标居中，悬停用 title 提示 */
+.app-shell.nav-collapsed .sidebar { padding-inline: 10px; align-items: stretch; }
+.app-shell.nav-collapsed .brand { display: none; }
+.app-shell.nav-collapsed .sidebar-head { justify-content: center; padding-bottom: 14px; }
+.app-shell.nav-collapsed .nav-group {
+  padding: 12px 0 6px; text-align: center;
+  letter-spacing: 0; font-size: 0;
+}
+.app-shell.nav-collapsed .nav-group::after {
+  content: ''; display: block; height: 1px; background: var(--divider);
+}
+.app-shell.nav-collapsed .nav-item { justify-content: center; padding: 11px 0; gap: 0; }
+.app-shell.nav-collapsed .nav-label { display: none; }
+.app-shell.nav-collapsed .user-chip { flex-direction: column; gap: 8px; padding: 9px 0; }
+.app-shell.nav-collapsed .user-name,
+.app-shell.nav-collapsed .foot-note { display: none; }
 
 /* .main 是 flex 纵向容器：页头、横幅、页面内容都吃同一个内容宽度，
  * 不会再出现「页头贴左、卡片居中」这种两套对齐。 */
@@ -242,25 +275,38 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: clamp(16px, 1.8vw, 30px) clamp(16px, 2vw, 32px) clamp(20px, 2.4vw, 40px);
+  padding: clamp(16px, 1.6vw, 26px) clamp(16px, 1.8vw, 28px) clamp(20px, 2.4vw, 40px);
 }
 .main > * {
   width: 100%;
   max-width: var(--content-max);
   margin-inline: auto;
 }
+/* 顶栏是控制条：滚过一屏后仍能看到当前页与主题开关 */
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: var(--gap);
-  padding-bottom: clamp(12px, 1.2vw, 16px);
+  padding: 10px 0 clamp(12px, 1.2vw, 16px);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--divider);
 }
-.topbar-title h1 { font-size: clamp(24px, 1.8vw + 17px, 32px); }
+.topbar-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.topbar-title { min-width: 0; }
+.topbar-title h1 { font-size: clamp(21px, 1.4vw + 16px, 28px); }
 .subtitle { margin-top: 5px; color: var(--text-2); font-size: var(--fs-small); }
 .top-actions { display: flex; align-items: center; gap: 9px; flex: none; }
+/* 展开时用侧边栏里的按钮；折叠后 Sidebar 的按钮收进图标栏顶部，这里也留一个入口给窄屏抽屉 */
+#nav-open { display: none; }
+.app-shell.nav-collapsed #nav-open { display: grid; }
+
 .page {
   flex: 1;
   display: flex;
@@ -291,22 +337,41 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .card-group { border-radius: var(--radius-item); background: var(--surface-2); overflow: hidden; }
 .card-group > .row { border-bottom: 1px solid var(--divider); padding: 13px 16px; }
 .card-group > .row:last-child { border-bottom: 0; }
-.grid { display: grid; gap: var(--gap); }
-.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-/* 两列组的第二列最容易在 1100 左右被挤成窄条，早点落成一列 */
-@media (max-width: 1180px) { .cols-2 { grid-template-columns: 1fr; } }
-@media (max-width: 1024px) { .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 760px) { .cols-2, .cols-3, .cols-4 { grid-template-columns: 1fr; } }
 
-.stat { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-/* 统计卡数量不是四的整数倍时，末行会被撑成半行留白：
- * 3n+1 张时最后一张跨满整行，3n+2 / 3n+3 张时最后两张各跨一格半。 */
-@media (min-width: 1025px) {
-  .cols-4 > .stat:last-child:nth-child(4n + 1) { grid-column: 1 / -1; }
-  .cols-4 > .stat:nth-last-child(-n + 2):nth-child(4n + 2) { grid-column: span 2; }
+/* Bento 栅格：12 列铺满内容宽度，页面里每张卡片自己决定占几格。
+ * 按容器宽度换算列数（每列至少 ~78px），窄屏落成 1 列，不再靠手写断点。 */
+.grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  align-items: start;
 }
+.bento {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: start;
+}
+.bento > * { min-width: 0; align-self: start; }
+/* 跨格：只在 12 栏真正存在时才生效，短内容不会被拉成一条空荡荡的长条 */
+.span-2 { grid-column: span 2; }
+.span-3 { grid-column: span 3; }
+.span-4 { grid-column: 1 / -1; }
+.card-tall { align-self: stretch; }
+@media (max-width: 1180px) {
+  .bento { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .span-2, .span-3 { grid-column: span 2; }
+}
+@media (max-width: 620px) {
+  .bento { grid-template-columns: minmax(0, 1fr); }
+  .span-2, .span-3, .span-4 { grid-column: 1 / -1; }
+}
+
+/* 统计磁贴：Bento 里最矮的一种卡，数字直接当主角 */
+.stat { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .stat-label { font-size: var(--fs-footnote); color: var(--text-3); }
 /* 路径这类长值：优先在分隔符后折行，实在放不下才整词断开 */
 .stat-value {
@@ -321,6 +386,53 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .stat-value.bad { color: var(--danger); }
 .stat-value.warn { color: var(--warn); }
 .stat-note { font-size: var(--fs-footnote); color: var(--text-2); }
+/* 大数字磁贴：概览 / 音乐库的计数专用，一眼能看到数量 */
+.stat-value.big {
+  font-size: clamp(26px, 2vw + 18px, 38px);
+  font-weight: var(--wght-display);
+  font-variation-settings: 'wght' var(--wght-display);
+  line-height: 1.1;
+}
+.stat-panel { display: flex; flex-direction: column; justify-content: space-between; min-height: 118px; }
+/* 面板头里的按钮组不允许被标题挤成两行：标题先让位，按钮保持一行 */
+.panel-head > div:first-child { min-width: 0; flex: 1 1 auto; }
+/* 中等宽度下按钮组会占掉半行，这时整段换行比把中文标题挤成「可用 / 性」更好读 */
+@media (max-width: 1180px) {
+  .panel-head, .card-head { flex-wrap: wrap; }
+}
+.panel-head .btn-row { flex-wrap: nowrap; justify-content: flex-end; }
+.panel-head .btn-row .ghost-btn { padding-inline: 14px; white-space: nowrap; }
+/* 迷你列表与卡片网格之间留一点气口 */
+.panel .mini-row:first-of-type { border-top: 1px solid var(--divider); }
+/* 卡片里的迷你列表：概览的「最近任务 / 最近整理」用行而不是表，窄格里也读得下去 */
+.mini-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--divider);
+  min-width: 0;
+}
+.mini-row:first-child { border-top: 0; }
+.mini-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mini-title {
+  font-size: var(--fs-small);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mini-sub { font-size: var(--fs-footnote); color: var(--text-3); overflow-wrap: anywhere; }
+.mini-side { flex: none; display: flex; align-items: center; gap: 8px; font-size: var(--fs-footnote); color: var(--text-3); }
+
+/* 转移方式可用性：卡片网格，一方式一张，不再占满一条宽表 */
+.mode-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); }
+.mode-tile {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 13px 15px;
+  border-radius: var(--radius-item);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  min-width: 0;
+}
+.mode-tile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mode-tile-head b { font-size: var(--fs-body); }
+.mode-tile p { font-size: var(--fs-footnote); color: var(--text-2); overflow-wrap: anywhere; }
 
 /* ---------- controls ---------- */
 .primary-btn, .ghost-btn, .danger-btn, .icon-btn {
@@ -526,9 +638,8 @@ td.th-key { color: var(--text-2); width: 130px; }
 
 /* ---------- mode cards / docs ---------- */
 /* 四张转移方式卡：1320 以下四列会把中文正文挤成每行三四个字，提前并成两列 */
-.mode-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 1320px) { .mode-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .mode-cards { grid-template-columns: 1fr; } }
+/* 四张转移方式卡：按容器宽度自动落列，窄屏一列，不再挤成每行三四个字 */
+.mode-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 12px; }
 .mode-card {
   padding: 16px;
   border-radius: var(--radius-item);
@@ -864,33 +975,45 @@ td.th-key { color: var(--text-2); width: 130px; }
 }
 
 /* ---------- responsive ---------- */
+/* 窄屏：侧边栏脱离栅格，折叠状态下完全收起，展开时以抽屉形式盖在内容之上。
+ * 内容永远占满整行宽度，抽屉不挤压正文。 */
 @media (max-width: 900px) {
-  .app-shell { grid-template-columns: 1fr; }
+  .app-shell, .app-shell.nav-collapsed { grid-template-columns: minmax(0, 1fr); }
   .sidebar {
-    position: static; height: auto;
-    flex-direction: row; align-items: center; flex-wrap: wrap;
-    padding: 12px 14px;
-    border-right: 0; border-bottom: 1px solid var(--divider);
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    z-index: 45;
+    width: min(268px, 84vw);
+    height: 100%;
+    padding: 20px 12px 16px;
+    border-right: 1px solid var(--divider);
+    border-bottom: 0;
+    box-shadow: var(--shadow);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform var(--transition), visibility var(--transition);
   }
-  .brand { padding: 0 8px 0 0; }
-  .brand-text { display: none; }
-  .nav { flex-direction: row; flex: 1; overflow-x: auto; gap: 3px; }
-  .nav-group { display: none; }
-  .nav-item { width: auto; padding: 8px 12px; }
-  .nav-item .nav-icon { display: none; }
-  .sidebar-foot { border-top: 0; padding: 0; }
-  .user-chip { padding: 4px 6px; background: transparent; }
-  .user-name, .foot-note { display: none; }
-}
-@media (max-width: 900px) {
-  /* 窄屏顶栏换行时，导航条与页头之间不留双份分隔线 */
-  .topbar { border-bottom: 1px solid var(--divider); }
+  .app-shell.nav-open .sidebar { transform: none; visibility: visible; }
+  /* 抽屉模式下图标栏那套收窄规则全部失效，展开就是完整导航 */
+  .app-shell.nav-collapsed .brand { display: flex; }
+  .app-shell.nav-collapsed .sidebar-head { justify-content: space-between; padding-bottom: 20px; }
+  .app-shell.nav-collapsed .nav-group {
+    padding: 18px 12px 7px; text-align: left; font-size: var(--fs-tiny); letter-spacing: 1.2px;
+  }
+  .app-shell.nav-collapsed .nav-group::after { content: none; }
+  .app-shell.nav-collapsed .nav-item { justify-content: flex-start; padding: 11px 13px; gap: 11px; }
+  .app-shell.nav-collapsed .nav-label { display: block; }
+  .app-shell.nav-collapsed .user-chip { flex-direction: row; gap: 10px; padding: 9px 10px; }
+  .app-shell.nav-collapsed .user-name { display: block; }
+  .app-shell.nav-collapsed .foot-note { display: block; }
+  .app-shell.nav-collapsed #nav-open { display: grid; }
+  .main { padding-top: 14px; }
+  .topbar { gap: 12px; }
 }
 @media (max-width: 620px) {
   .main { padding: 14px; }
   .topbar { flex-direction: row; align-items: flex-start; flex-wrap: nowrap; }
   .top-actions { justify-content: flex-end; }
-  .cols-4, .mode-cards { grid-template-columns: 1fr; }
   .card-head, .panel-head { flex-direction: column; }
   .dialog-actions { flex-direction: column-reverse; }
   .dialog-actions button { width: 100%; }
@@ -1008,41 +1131,46 @@ td.th-key { color: var(--text-2); width: 130px; }
 }
 .lib-search:focus { outline: none; border-color: var(--primary); }
 
-/* 竖向歌曲列表：一行一首，整页往下排 */
+/* 曲目卡片网格：封面在上，标题 / 歌手·专辑 / 歌词预览竖排。
+ * 每张卡至少 210px 宽，宽屏自动均分成 3–6 列，窄屏一列，不留半格空白。 */
 .lib-tags {
-  display: flex; flex-direction: column; gap: 6px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr));
   padding: 2px;
 }
 .lib-row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 9px;
+  min-width: 0;
+  padding: 10px;
   border-radius: var(--radius-item);
   background: var(--surface-2);
   border: 1px solid transparent;
   cursor: pointer;
-  transition: border-color var(--transition), background var(--transition);
+  transition: border-color var(--transition), background var(--transition), transform var(--transition);
 }
-.lib-row:hover { border-color: var(--outline); background: var(--surface-3); }
+.lib-row:hover { border-color: var(--outline); background: var(--surface-3); transform: translateY(-2px); }
 .lib-row:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .lib-row.gap { border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.lib-row-top { display: flex; align-items: flex-start; gap: 6px; }
 .lib-row-cover {
-  position: relative; flex: 0 0 auto;
-  width: 48px; height: 48px;
-  border-radius: var(--radius-item); overflow: hidden;
+  position: relative; flex: 1 1 auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 12px; overflow: hidden;
   background: var(--surface-3);
   display: grid; place-items: center;
 }
 .lib-row-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.lib-cover-fallback { font-size: 20px; color: var(--text-3); }
-.lib-row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lib-cover-fallback { font-size: 26px; color: var(--text-3); }
+.lib-row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .lib-row-title {
   min-width: 0;
-  font-size: var(--fs-body); font-weight: var(--wght-heading);
+  font-size: var(--fs-small); font-weight: var(--wght-heading);
   font-variation-settings: 'wght' var(--wght-heading);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lib-row-sub {
-  font-size: var(--fs-small); color: var(--text-2);
+  font-size: var(--fs-footnote); color: var(--text-2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lib-row-sub.blank { color: var(--text-3); }
@@ -1052,12 +1180,21 @@ td.th-key { color: var(--text-2); width: 130px; }
   background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn);
 }
 .lib-row-lyrics {
-  flex: 0 0 auto; width: min(38%, 320px);
-  font-size: var(--fs-footnote); line-height: 1.45; color: var(--text-3);
+  font-size: var(--fs-tiny); line-height: 1.45; color: var(--text-3);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; overflow-wrap: anywhere;
 }
 .lib-row-lyrics.blank { font-style: italic; }
+/* 窄屏两列：一列时正方形封面会占满整屏，滚半天才看到第二首 */
+@media (max-width: 720px) {
+  .lib-tags { grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); }
+  .lib-row { padding: 8px; gap: 7px; }
+}
+@media (max-width: 380px) {
+  .lib-tags { grid-template-columns: minmax(0, 1fr); }
+  .lib-row-cover { aspect-ratio: 16 / 9; }
+}
+
 .lib-meta-key { flex: 0 0 64px; color: var(--text-3); font-size: var(--fs-footnote); }
 .lib-detail-value.blank { color: var(--text-3); }
 
@@ -1105,6 +1242,5 @@ td.th-key { color: var(--text-2); width: 130px; }
 .cand-chip.dim { opacity: .45; cursor: not-allowed; }
 @media (max-width: 720px) {
   .lib-detail-grid { grid-template-columns: minmax(0, 1fr); }
-  .lib-row-lyrics { display: none; }
   .scrape-result { flex-wrap: wrap; }
 }

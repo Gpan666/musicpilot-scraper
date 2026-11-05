@@ -231,12 +231,40 @@ async function enterApp() {
 }
 
 /* ---------------- shell ---------------- */
+/* 侧边栏三种形态：宽屏可折叠成图标栏（宽度交给 CSS 断点决定），
+ * 窄屏折叠后变成覆盖式抽屉。折叠偏好与主题一样存在 localStorage，刷新后保持。 */
+function navCollapsed() { return localStorage.getItem('mp-nav') === 'collapsed'; }
+function applyNavCollapsed(collapsed) {
+  localStorage.setItem('mp-nav', collapsed ? 'collapsed' : 'expanded');
+  const shell = $('app-shell');
+  shell.classList.toggle('nav-collapsed', collapsed);
+  // 图标栏模式下状态由外壳类决定，这里只维护抽屉的显式开关
+  if (!collapsed) shell.classList.remove('nav-open');
+  const toggle = $('nav-toggle');
+  $('nav-toggle-icon').innerHTML = spriteIcon(collapsed ? 'i-expand' : 'i-collapse');
+  toggle.title = collapsed ? '展开侧边栏' : '收起侧边栏';
+  toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  $('nav-open').title = collapsed ? '展开导航' : '收起导航';
+}
+function toggleNav() {
+  const shell = $('app-shell');
+  // 窄屏（抽屉模式）与宽屏（图标栏）共用同一个按钮，行为按当前断点区分
+  const compact = window.matchMedia('(max-width: 900px)').matches;
+  if (compact) {
+    shell.classList.toggle('nav-open');
+    localStorage.setItem('mp-nav', shell.classList.contains('nav-open') ? 'expanded' : 'collapsed');
+    applyNavCollapsed(!shell.classList.contains('nav-open'));
+    return;
+  }
+  applyNavCollapsed(!navCollapsed());
+}
 function renderNav() {
   $('nav').innerHTML = NAV.map((item) => (
     item.group
       ? `<div class="nav-group">${esc(item.group)}</div>`
-      : `<button class="nav-item${state.page === item.id ? ' active' : ''}" data-page="${item.id}">
-           <span class="nav-icon">${spriteIcon(item.icon)}</span><span>${esc(item.label)}</span></button>`
+      : `<button class="nav-item${state.page === item.id ? ' active' : ''}" data-page="${item.id}"
+           title="${esc(item.label)}">
+           <span class="nav-icon">${spriteIcon(item.icon)}</span><span class="nav-label">${esc(item.label)}</span></button>`
   )).join('');
   document.querySelectorAll('[data-page]').forEach((button) => {
     button.addEventListener('click', () => go(button.dataset.page));
@@ -245,6 +273,10 @@ function renderNav() {
 function go(page) {
   state.page = page;
   renderNav();
+  if (window.matchMedia('(max-width: 900px)').matches) {
+    $('app-shell').classList.remove('nav-open');
+    applyNavCollapsed(true);
+  }
   const [title, subtitle] = PAGE_META[page] || PAGE_META.dashboard;
   $('page-title').textContent = title;
   $('page-subtitle').textContent = subtitle;
@@ -362,9 +394,10 @@ async function renderDashboard() {
   state.capabilities = data.capabilities;
   const same = data.same_device;
   const watch = state.watch || {};
+  // 路径类的值最长，跨两格放才不至于把目录从中间折断
   const cards = [
-    ['源目录', data.source_dir, data.source_exists ? 'ok' : 'bad', data.source_exists ? '目录可访问' : '目录不存在，请检查挂载'],
-    ['音乐库目录', data.library_dir, data.library_exists ? 'ok' : 'bad', data.library_exists ? '目录可访问' : '首次执行时自动创建'],
+    ['源目录', data.source_dir, data.source_exists ? 'ok' : 'bad', data.source_exists ? '目录可访问' : '目录不存在，请检查挂载', 'span-2'],
+    ['音乐库目录', data.library_dir, data.library_exists ? 'ok' : 'bad', data.library_exists ? '目录可访问' : '首次执行时自动创建', 'span-2'],
     ['转移方式', modeLabel(state.settings.transfer_mode), 'warn', same === null ? '等待目录就绪' : (same ? '源与库在同一挂载点 · 可用硬链接' : '源与库跨挂载点 · 硬链接不可用')],
     ['当前账号', state.auth.username || '—', 'ok', state.auth.is_admin ? '管理员 · 会话保护已开启' : '普通账号 · 会话保护已开启'],
     ['自动刮削', watch.enabled ? '已开启' : '已关闭', watch.enabled ? 'ok' : 'warn',
@@ -372,50 +405,61 @@ async function renderDashboard() {
         ? `每 ${Math.round(watch.interval || 30)} 秒检查源目录${watch.tracked ? ` · 已记录 ${watch.tracked} 个文件` : ''}${watch.in_library ? ` · 库内 ${watch.in_library} 个已过滤` : ''}`
         : '开启后只刮库里还没有的新文件'],
   ];
-  const modeRows = data.capabilities.map((item) => `
-    <tr>
-      <td><b>${esc(item.label)}</b></td>
-      <td>${capabilityBadge(item)}${item.probed ? ' <span class="tiny">已自检</span>' : ''}</td>
-      <td class="muted">${esc(item.reason)}</td>
-    </tr>`).join('');
-  const jobs = (data.jobs || []).map((job) => `
-    <tr><td class="truncate" title="${esc(jobNote(job))}">${esc(jobLabel(job))}</td>
-      <td>${job.dry_run ? '预览' : jobKind(job)}</td>
-      <td>${statusBadge(job.status)}</td>
-      <td class="muted">${esc(job.processed || 0)} 项</td>
-      <td class="muted small">${esc(fmtTime(job.created_at))}</td></tr>`).join('');
-  const recent = (data.recent_done || []).map((item) => `
-    <tr><td class="truncate" title="${esc(item.source)}">${esc(fileName(item.source))}</td>
-      <td>${esc(item.mode_label || modeLabel(item.mode))}</td>
-      <td class="muted small">${esc(fmtTime(item.created_at))}</td></tr>`).join('');
+  // Bento：目录与账号这类「值可能很长」的磁贴跨两格，短值的一组安放在剩余格子里
+  const tiles = cards.map(([label, value, tone, note, span]) => `
+    <div class="panel stat stat-panel${span ? ` ${span}` : ''}">
+      <div class="stat-label">${esc(label)}</div>
+      <div class="stat-value ${tone}">${esc(value)}</div>
+      <div class="stat-note">${esc(note)}</div></div>`).join('');
+  const modeTiles = data.capabilities.map((item) => `
+    <div class="mode-tile">
+      <div class="mode-tile-head">
+        <b>${esc(item.label)}</b>
+        <span>${capabilityBadge(item)}${item.probed ? ' <span class="tiny">已自检</span>' : ''}</span>
+      </div>
+      <p>${esc(item.reason)}</p>
+    </div>`).join('');
+  const jobRows = (data.jobs || []).map((job) => `
+    <div class="mini-row">
+      <div class="mini-main">
+        <div class="mini-title" title="${esc(jobNote(job))}">${esc(jobLabel(job))}</div>
+        <div class="mini-sub">${job.dry_run ? '预览' : esc(jobKind(job))} · ${esc(job.processed || 0)} 项</div>
+      </div>
+      <div class="mini-side">${statusBadge(job.status)}<span>${esc(fmtTime(job.created_at))}</span></div>
+    </div>`).join('');
+  const recentRows = (data.recent_done || []).map((item) => `
+    <div class="mini-row">
+      <div class="mini-main">
+        <div class="mini-title" title="${esc(item.source)}">${esc(fileName(item.source))}</div>
+        <div class="mini-sub">${esc(item.mode_label || modeLabel(item.mode))}</div>
+      </div>
+      <div class="mini-side"><span>${esc(fmtTime(item.created_at))}</span></div>
+    </div>`).join('');
 
   $('page').innerHTML = `
-    <div class="grid cols-4">
-      ${cards.map(([label, value, tone, note]) => `
-        <div class="panel stat"><div class="stat-label">${esc(label)}</div>
-          <div class="stat-value ${tone}">${esc(value)}</div>
-          <div class="stat-note">${esc(note)}</div></div>`).join('')}
-    </div>
-    <div class="panel">
-      <div class="panel-head">
-        <div><h2>四种转移方式可用性</h2><p>硬链接要求源目录与音乐库位于同一文件系统 / 同一挂载点</p></div>
-        <div class="btn-row">
-          <button class="ghost-btn" id="probe-btn">运行写入自检</button>
-          <button class="ghost-btn" data-go="settings">更改目录</button>
+    <div class="bento">
+      ${tiles}
+      <div class="panel span-2">
+        <div class="panel-head">
+          <div><h2>四种转移方式可用性</h2><p>硬链接要求源目录与音乐库位于同一文件系统 / 同一挂载点</p></div>
+          <div class="btn-row">
+            <button class="ghost-btn small" id="probe-btn">运行写入自检</button>
+            <button class="ghost-btn small" data-go="settings">更改目录</button>
+          </div>
         </div>
+        <div class="mode-grid">${modeTiles}</div>
+        <p class="small muted" style="margin:14px 0 0">自检会在两个目录各创建一个临时文件并立即删除，用于确认写权限以及硬链接 / 符号链接是否被文件系统支持。</p>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>方式</th><th>状态</th><th>说明</th></tr></thead>
-        <tbody>${modeRows}</tbody></table></div>
-      <p class="small muted" style="margin:14px 0 0">自检会在两个目录各创建一个临时文件并立即删除，用于确认写权限以及硬链接 / 符号链接是否被文件系统支持。</p>
-    </div>
-    <div class="grid cols-2">
-      <div class="panel"><div class="panel-head"><h2>最近任务</h2>
-        <button class="ghost-btn" data-go="jobs">查看全部</button></div>
-        <div class="table-wrap"><table class="jobs-table"><thead><tr><th>文件</th><th>类型</th><th>状态</th><th>数量</th><th>时间</th></tr></thead>
-          <tbody>${jobs || '<tr><td colspan="5" class="empty">暂无任务</td></tr>'}</tbody></table></div></div>
-      <div class="panel"><div class="panel-head"><h2>最近整理</h2></div>
-        <div class="table-wrap"><table><thead><tr><th>文件</th><th>方式</th><th>时间</th></tr></thead>
-          <tbody>${recent || '<tr><td colspan="3" class="empty">暂无整理记录</td></tr>'}</tbody></table></div></div>
+      <div class="panel span-2">
+        <div class="panel-head"><h2>最近任务</h2>
+          <button class="ghost-btn" data-go="jobs">查看全部</button></div>
+        ${jobRows || '<div class="empty">暂无任务</div>'}
+      </div>
+      <div class="panel span-2">
+        <div class="panel-head"><h2>最近整理</h2>
+          <p>确认后的文件按当前转移方式落库</p></div>
+        ${recentRows || '<div class="empty">暂无整理记录</div>'}
+      </div>
     </div>`;
   $('probe-btn').addEventListener('click', async () => {
     try {
@@ -472,12 +516,14 @@ function libraryRow(track) {
     : '<div class="lib-row-lyrics blank">无歌词</div>';
   return `<article class="lib-row${track.complete ? '' : ' gap'}" data-lib="${esc(track.path)}"
       title="${esc(track.path)}" role="button" tabindex="0">
-    <div class="lib-row-cover">${cover}</div>
+    <div class="lib-row-top">
+      <div class="lib-row-cover">${cover}</div>
+      ${track.complete ? '' : '<span class="lib-flag">待补全</span>'}
+    </div>
     <div class="lib-row-main">
       <div class="lib-row-title">${esc(track.title || track.name)}</div>
       <div class="lib-row-sub${sub ? '' : ' blank'}">${esc(sub || '歌手 / 专辑待补全')}</div>
     </div>
-    ${track.complete ? '' : '<span class="lib-flag">待补全</span>'}
     ${lyrics}
   </article>`;
 }
@@ -552,8 +598,8 @@ async function openLibraryDetail(path) {
 }
 
 function libraryStatCard(label, value, note, tone = '') {
-  return `<div class="panel stat"><div class="stat-label">${esc(label)}</div>
-    <div class="stat-value ${tone}">${esc(String(value ?? 0))}</div>
+  return `<div class="panel stat stat-panel"><div class="stat-label">${esc(label)}</div>
+    <div class="stat-value big ${tone}">${esc(String(value ?? 0))}</div>
     <div class="stat-note">${esc(note)}</div></div>`;
 }
 
@@ -580,7 +626,7 @@ async function renderLibrary() {
     <span class="badge ${item.enabled ? 'info' : ''}">${esc(item.label)}${item.enabled ? '' : '（未启用）'}</span>`).join('');
   $('page').innerHTML = `
     <div class="banner info">批量补全只写标签：不移动、不复制、不建硬链接或软链接，文件位置一律不变。</div>
-    <div class="grid cols-4">
+    <div class="bento">
       ${libraryStatCard('曲目', stats.tracks, '每次进入都重新扫盘枚举')}
       ${libraryStatCard('歌手', stats.artists, '按标签统计')}
       ${libraryStatCard('专辑', stats.albums, '按标签统计')}
@@ -602,7 +648,7 @@ async function renderLibrary() {
       </div>
       <p class="small muted" style="margin:0 0 10px">可用的刮削来源：${sourceChips || '—'}（在「刮削设置 → 标签与元数据」里勾选）</p>
       <div id="lib-tags" class="lib-tags"></div>
-      <p class="small muted" style="margin:10px 0 0">点曲目弹出详情卡片；「手动刮削」可以选平台搜索并看到 1–10 的匹配度。</p>
+      <p class="small muted" style="margin:10px 0 0">点曲目卡片弹出详情；「手动刮削」可以选平台搜索并看到 1–10 的匹配度。</p>
     </div>`;
 
   renderLibraryTags();
@@ -643,7 +689,7 @@ async function openScrapeDialog(path) {
         ${chips}
       </div>
     </div>
-    <div class="grid cols-3" style="margin-top:12px">
+    <div class="grid" style="margin-top:12px">
       <label class="field"><span class="field-label">歌名</span>
         <input id="scrape-title" value="${esc(track.title || '')}"></label>
       <label class="field"><span class="field-label">歌手</span>
@@ -797,8 +843,9 @@ async function renderFiles() {
       <td><button class="ghost-btn small" data-detail="${esc(file.path)}">详情</button></td></tr>`;
   }).join('');
   $('page').innerHTML = `
-    <div class="panel">
-      <div class="panel-head"><div><h2>源目录</h2>
+    <div class="bento">
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>源目录</h2>
         <p>${esc(data.source_dir)} · 共扫描到 ${data.total} 个音频文件${data.truncated ? '（列表只显示前 1000 个）' : ''}</p></div>
         <div class="btn-row">
           <button class="ghost-btn" id="refresh-files">重新扫描</button>
@@ -809,7 +856,7 @@ async function renderFiles() {
         <th class="col-pick"></th><th>文件名</th><th>标题</th><th>歌手</th><th>专辑</th><th>大小</th><th>时长</th><th>操作</th>
       </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">源目录中没有找到音频文件</td></tr>'}</tbody></table></div>
     </div>
-    <div class="panel">
+    <div class="panel span-4">
       <div class="panel-head"><div><h2>对选中的 <span id="selection-count">${state.selected.size}</span> 个文件执行</h2>
         <p>不选择任何文件时，默认处理源目录内全部音频文件</p></div></div>
       <div class="btn-row" style="margin-bottom:12px">
@@ -821,6 +868,7 @@ async function renderFiles() {
         <button class="primary-btn" id="scrape-btn">② 直接刮削整理</button>
         <span class="small muted">当前方式：<b>${esc(modeLabel(state.settings.transfer_mode))}</b> · 建议先预览</span>
       </div>
+    </div>
     </div>`;
   $('refresh-files').addEventListener('click', renderFiles);
   $('select-all').addEventListener('click', () => { state.files.forEach((f) => state.selected.add(f.path)); renderFiles(); });
@@ -853,7 +901,7 @@ async function showFileDetail(path) {
       ${row('内嵌封面', data.has_embedded_cover ? '有' : '无')}
     </tbody></table></div>
     <div class="divider"></div>
-    <div class="grid cols-2">
+    <div class="grid">
       <div><h3>文件内已有标签</h3><div class="table-wrap"><table><tbody>
         ${row('标题', tags.title)}${row('歌手', tags.artist)}${row('专辑', tags.album)}
         ${row('年份', tags.year)}${row('音轨', tags.track_number)}
@@ -1091,8 +1139,8 @@ async function renderPlan() {
       </div>
       <div id="plan-grid" class="plan-grid plan-grid-cards"></div>
       <div id="plan-table-wrap" class="hidden"></div>
-    </div>
-    <div class="panel"><h3>执行说明</h3>
+      <div class="divider"></div>
+      <h3>执行说明</h3>
       <p class="muted small" style="margin-top:8px">标签会在文件转移之前写入源文件。复制与移动之后目标文件独立；硬链接与软链接的目标共享源文件数据，源文件的标签也会一起被补全。详见「转移方式说明」。</p>
     </div>`;
   renderPlanCards();
@@ -1188,7 +1236,7 @@ async function renderJobs() {
   state.jobs = jobs;
   const active = jobs.find((job) => job.status === 'running' || job.status === 'pending');
   const progressCard = active ? `
-    <div class="panel"><div class="panel-head"><div><h2>当前任务</h2>
+    <div class="panel span-2"><div class="panel-head"><div><h2>当前任务</h2>
       <p>${esc(jobLabel(active))} · ${esc(active.message || '正在处理')} · <span class="mono">${esc(active.id)}</span></p></div>
       <button class="danger-btn" id="cancel-job">取消任务</button></div>
       <div class="progress"><span style="width:${Math.round(100 * (active.processed || 0) / Math.max(1, active.total || active.processed || 1))}%"></span></div>
@@ -1213,21 +1261,22 @@ async function renderJobs() {
   }).join('');
   const watch = state.watch || {};
   const watchBar = `
-    <div class="panel"><div class="between">
+    <div class="panel span-2"><div class="between">
       <div><h3>自动刮削 <span class="badge ${watch.enabled ? 'ok' : 'warn'}">${watch.enabled ? '开启' : '关闭'}</span></h3>
         <p class="small muted" style="margin-top:4px">${watch.enabled
           ? `每 ${Math.round(watch.interval || 30)} 秒检查一次${watch.last_scan ? ` · 上次 ${esc(fmtTime(watch.last_scan))}` : ''} · 只刮库里还没有的新文件，已整理的自动跳过`
           : '开启后，源目录里出现库里还没有的新文件会自动刮削，无需手动操作'}</p></div>
       <button class="ghost-btn" data-go="settings">${watch.enabled ? '调整' : '去开启'}</button>
     </div></div>`;
-  $('page').innerHTML = `${watchBar}${progressCard}
-    <div class="panel"><div class="panel-head"><div><h2>全部任务</h2><p>点「明细」右侧滑出详情；每次只允许一个任务运行，避免文件竞争</p></div>
+  $('page').innerHTML = `<div class="bento">${watchBar}${progressCard}
+    <div class="panel span-4"><div class="panel-head"><div><h2>全部任务</h2><p>点「明细」右侧滑出详情；每次只允许一个任务运行，避免文件竞争</p></div>
       <div class="btn-row">
         <button class="ghost-btn" id="refresh-jobs">刷新</button>
         <button class="ghost-btn danger-text" id="clear-jobs" ${jobs.length ? '' : 'disabled'}>清空记录</button>
       </div></div>
       <div class="table-wrap"><table class="jobs-table"><thead><tr><th>文件 / 歌曲名</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="6" class="empty">暂无任务</td></tr>'}</tbody></table></div>
+    </div>
     </div>`;
   $('refresh-jobs').addEventListener('click', renderJobs);
   document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
@@ -1499,10 +1548,10 @@ function renderSettings() {
     <label class="check-line"><input type="checkbox" data-source="${name}" ${(s.metadata_sources || []).includes(name) ? 'checked' : ''}>
       ${esc(label)}</label>`).join('');
   const accountCard = state.auth.is_admin ? `
-    <div class="panel">
+    <div class="panel span-2">
       <div class="panel-head"><div><h2>账户</h2>
         <p>当前登录：${esc(state.auth.username)}（管理员）。可以在这里添加新的使用账号。</p></div></div>
-      <div class="grid cols-2">
+      <div class="grid">
         <label class="field"><span class="field-label">新用户名</span>
           <input id="new-user" type="text" autocomplete="off" placeholder="3–32 位字母、数字、_ . -"></label>
         <label class="field"><span class="field-label">新密码</span>
@@ -1512,12 +1561,12 @@ function renderSettings() {
     </div>` : '';
   const watch = state.watch || {};
   const watchCard = `
-    <div class="panel">
+    <div class="panel span-2">
       <div class="panel-head"><div><h2>自动刮削</h2>
         <p>盯住源目录，出现新文件就自动排一个刮削任务，不用再手动点</p></div>
         <span class="badge ${watch.enabled ? 'ok' : 'warn'}">${watch.enabled ? '运行中' : '已关闭'}</span></div>
       <label class="check-line"><input type="checkbox" id="f-watch" ${watch.enabled ? 'checked' : ''}>启用自动刮削（监控源目录）</label>
-      <div class="grid cols-2">
+      <div class="grid">
         <label class="field"><span class="field-label">检查间隔（秒）</span>
           <input id="f-watch-interval" type="number" min="5" max="3600" step="5" value="${esc(watch.interval ?? 30)}"></label>
         <label class="field"><span class="field-label">稳定等待（秒）</span>
@@ -1533,47 +1582,49 @@ function renderSettings() {
       ${watch.last_error ? `<p class="small" style="color:var(--danger);margin-top:8px">${esc(watch.last_error)}</p>` : ''}
     </div>`;
   $('page').innerHTML = `
-    <div class="panel">
-      <div class="panel-head"><div><h2>目录</h2>
-        <p>直接点「浏览…」从服务器挂载目录中选择，不需要手动输入路径</p></div></div>
-      <div class="grid cols-2">
-        ${pathField('f-source', '源目录（待刮削的下载文件夹）', s.source_dir, '选择源目录')}
-        ${pathField('f-library', '音乐库目录（整理后的目标）', s.library_dir, '选择音乐库目录')}
+    <div class="bento">
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>目录</h2>
+          <p>直接点「浏览…」从服务器挂载目录中选择，不需要手动输入路径</p></div></div>
+        <div class="grid">
+          ${pathField('f-source', '源目录（待刮削的下载文件夹）', s.source_dir, '选择源目录')}
+          ${pathField('f-library', '音乐库目录（整理后的目标）', s.library_dir, '选择音乐库目录')}
+        </div>
       </div>
-    </div>
-    <div class="panel"><div class="panel-head"><div><h2>转移方式</h2>
-      <p>决定刮削完成后文件如何进入音乐库；四种方式的完整区别见「转移方式说明」</p></div></div>
-      <div class="mode-cards">${modeCards}</div>
-    </div>
-    <div class="panel"><div class="panel-head"><div><h2>命名与匹配</h2>
-      <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code> <span class="small muted">${esc(TEMPLATE_FIELD_LABELS[f] || '')}</span>`).join(' · ')}</p>
-        <p>默认按「专辑名 / 专辑歌手 / 歌曲文件」建目录，播放器与音乐服务器都能直接认</p></div></div>
-      <div class="grid cols-2">
-        <label class="field"><span class="field-label">命名模板预设</span>
-          <select id="preset">${presets}</select></label>
-        <label class="field"><span class="field-label">命名模板</span>
-          <input id="f-template" value="${esc(s.naming_template || '')}"></label>
-        <label class="field"><span class="field-label">目标冲突策略</span><select id="f-conflict">
-          <option value="rename" ${s.conflict_policy === 'rename' ? 'selected' : ''}>自动改名（保留两者）</option>
-          <option value="skip" ${s.conflict_policy === 'skip' ? 'selected' : ''}>跳过（保留已有文件）</option>
-          <option value="overwrite" ${s.conflict_policy === 'overwrite' ? 'selected' : ''}>覆盖已有文件</option>
-        </select></label>
-        <label class="field"><span class="field-label">缺失字段占位符</span>
-          <input id="f-unknown" value="${esc(s.unknown_placeholder || '未知')}" placeholder="未知"></label>
-        <label class="field"><span class="field-label">在线匹配置信度阈值（0–1）</span>
-          <input id="f-threshold" type="number" min="0" max="1" step="0.05" value="${esc(s.confidence_threshold ?? 0.62)}"></label>
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>转移方式</h2>
+          <p>决定刮削完成后文件如何进入音乐库；四种方式的完整区别见「转移方式说明」</p></div></div>
+        <div class="mode-cards">${modeCards}</div>
       </div>
-      <p class="small muted">模板示例：<span class="mono" id="template-example">${esc(meta.example_target || '')}</span></p>
-    </div>
-    <div class="grid cols-2">
-      <div class="panel"><h2>标签与元数据</h2>
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>命名与匹配</h2>
+          <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code> <span class="small muted">${esc(TEMPLATE_FIELD_LABELS[f] || '')}</span>`).join(' · ')}</p>
+          <p>默认按「专辑名 / 专辑歌手 / 歌曲文件」建目录，播放器与音乐服务器都能直接认</p></div></div>
+        <div class="grid">
+          <label class="field"><span class="field-label">命名模板预设</span>
+            <select id="preset">${presets}</select></label>
+          <label class="field"><span class="field-label">命名模板</span>
+            <input id="f-template" value="${esc(s.naming_template || '')}"></label>
+          <label class="field"><span class="field-label">目标冲突策略</span><select id="f-conflict">
+            <option value="rename" ${s.conflict_policy === 'rename' ? 'selected' : ''}>自动改名（保留两者）</option>
+            <option value="skip" ${s.conflict_policy === 'skip' ? 'selected' : ''}>跳过（保留已有文件）</option>
+            <option value="overwrite" ${s.conflict_policy === 'overwrite' ? 'selected' : ''}>覆盖已有文件</option>
+          </select></label>
+          <label class="field"><span class="field-label">缺失字段占位符</span>
+            <input id="f-unknown" value="${esc(s.unknown_placeholder || '未知')}" placeholder="未知"></label>
+          <label class="field"><span class="field-label">在线匹配置信度阈值（0–1）</span>
+            <input id="f-threshold" type="number" min="0" max="1" step="0.05" value="${esc(s.confidence_threshold ?? 0.62)}"></label>
+        </div>
+        <p class="small muted">模板示例：<span class="mono" id="template-example">${esc(meta.example_target || '')}</span></p>
+      </div>
+      <div class="panel span-2"><h2>标签与元数据</h2>
         <label class="check-line"><input type="checkbox" id="f-write-tags" ${s.write_tags ? 'checked' : ''}>写入音频标签</label>
         <label class="check-line"><input type="checkbox" id="f-cover" ${s.embed_cover ? 'checked' : ''}>下载并内嵌封面</label>
         <label class="check-line"><input type="checkbox" id="f-lyrics" ${s.write_lyrics ? 'checked' : ''}>写入歌词（网易云 / QQ音乐 / 酷狗 / 酷我）</label>
         <label class="check-line"><input type="checkbox" id="f-relative" ${s.symlink_relative ? 'checked' : ''}>软链接使用相对路径（推荐）</label>
         <div class="divider"></div><div class="small muted" style="margin-bottom:8px">在线元数据源</div>${sourceChecks}
       </div>
-      <div class="panel"><h2>外观</h2>
+      <div class="panel span-2"><h2>外观</h2>
         <p class="muted small" style="margin:8px 0 12px">默认夜间模式；「跟随系统」会按操作系统的明暗偏好自动切换。字号与字重随屏幕宽度自适应。</p>
         <div class="btn-row">
           <button class="ghost-btn" data-theme-choice="dark">夜间</button>
@@ -1584,13 +1635,13 @@ function renderSettings() {
         <h3>标签写入与链接的关系</h3>
         <p class="muted small" style="margin-top:8px">标签在转移之前写入源文件。使用硬链接 / 软链接时目标共享源文件数据，因此源文件标签也会被补全，之后修改任一边都会影响另一边。若不希望改动源文件，请关闭「写入音频标签」或改用复制。</p>
       </div>
-    </div>
-    ${watchCard}
-    ${accountCard}
-    <div class="panel"><div class="between">
-      <div><h3>保存设置</h3>
-        <p class="small muted" style="margin-top:4px">设置保存在数据目录的 SQLite 中，重启容器后依然生效；环境变量作为默认值。</p></div>
-      <button class="primary-btn" id="save-settings">保存设置</button></div></div>`;
+      ${watchCard}
+      ${accountCard}
+      <div class="panel span-4"><div class="between">
+        <div><h3>保存设置</h3>
+          <p class="small muted" style="margin-top:4px">设置保存在数据目录的 SQLite 中，重启容器后依然生效；环境变量作为默认值。</p></div>
+        <button class="primary-btn" id="save-settings">保存设置</button></div></div>
+    </div>`;
   applyTheme(themePreference());
   document.querySelectorAll('[data-mode]').forEach((card) => card.addEventListener('click', () => {
     state.settings.transfer_mode = card.dataset.mode;
@@ -1686,7 +1737,7 @@ async function renderDocs() {
       <h3>${esc(mode.label)}</h3>
       <div class="doc-en">${esc(mode.short)}</div>
       <p><b>实现：</b>${esc(mode.how)}</p>
-      <div class="grid cols-2" style="gap:12px">
+      <div class="grid" style="gap:12px">
         <div><b class="small">优点</b><ul>${(mode.pros || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>
         <div><b class="small">限制与风险</b><ul>${(mode.cons || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>
       </div>
@@ -1705,7 +1756,7 @@ async function renderDocs() {
     <div class="panel"><h2>容器挂载要点</h2>
       <p class="muted small" style="margin-top:8px">硬链接要求「同一挂载点」：请把源目录和音乐库作为同一个宿主机父目录下的两个子目录一次性挂载进容器（例如 <code class="mono">/vol1/1000:/media</code>，对应 <code class="mono">/media/music_downloads</code> 与 <code class="mono">/media/音乐</code>）。同盘前提下两者设备号相同即可建立硬链接；若其中一个目录在宿主机上属于另一个存储池或独立挂载点，则无论怎么映射都无法使用硬链接。软链接默认写相对路径，容器内外都能解析。</p>
     </div>
-    <div class="grid" style="gap:var(--gap)">${blocks}</div>`;
+    <div class="grid">${blocks}</div>`;
 }
 
 /* ---------------- boot ---------------- */
@@ -1724,6 +1775,7 @@ async function loadModes() {
 }
 async function boot() {
   applyTheme(themePreference());
+  applyNavCollapsed(navCollapsed());
   try {
     const status = await refreshAuth();
     $('auth-tabs').classList.add('hidden');
@@ -1740,6 +1792,21 @@ async function boot() {
 
 /* ---------------- global events ---------------- */
 $('theme-toggle').addEventListener('click', toggleTheme);
+$('nav-toggle').addEventListener('click', toggleNav);
+$('nav-open').addEventListener('click', toggleNav);
+window.matchMedia('(max-width: 900px)').addEventListener('change', () => {
+  $('app-shell').classList.remove('nav-open');
+  applyNavCollapsed(navCollapsed());
+});
+// 窄屏抽屉：点主区域或按 Esc 收起，避免遮住内容又找不到关闭入口
+$('page').addEventListener('click', () => {
+  if (window.matchMedia('(max-width: 900px)').matches) $('app-shell').classList.remove('nav-open');
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (!$('app-shell').classList.contains('nav-open')) return;
+  $('app-shell').classList.remove('nav-open');
+});
 $('modal-close').addEventListener('click', closeModal);
 $('modal').addEventListener('click', (event) => { if (event.target === $('modal')) closeModal(); });
 $('logout-btn').addEventListener('click', async () => {
