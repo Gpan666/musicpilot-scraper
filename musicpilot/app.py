@@ -106,7 +106,7 @@ def create_app() -> FastAPI:
     protected.include_router(routes_watch.router)
     app.include_router(protected)
 
-    static_dir = base.static_dir
+    static_dir = base.web_dir
     if static_dir.is_dir():
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="web")
     else:
