@@ -16,6 +16,16 @@ COPY pyproject.toml README.md LICENSE ./
 COPY musicpilot ./musicpilot
 COPY web ./web
 COPY scripts ./scripts
+# uvicorn[standard] 里的 httptools/uvloop 在 linux/arm/v7 上没有预编译 wheel，
+# pip 只能回落到源码编译（uvloop 还得 ./configure 编译 libuv），
+# python:slim 不带编译器，缺了这层 arm/v7 架构必挂。
+# 编译工具只留在 builder 阶段，运行镜像不带。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        libssl-dev \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
 # 前端随 wheel 安装到 venv 内（musicpilot/web），镜像里不再单独拷 web/
 RUN python -m venv /opt/venv \
     && python scripts/sync_web.py \
@@ -54,7 +64,7 @@ RUN apt-get update \
     && groupadd --gid "${APP_GID}" app \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin app
 
-COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder --chown=app:app /opt/venv /opt/venv
 
 WORKDIR /app
 RUN mkdir -p /data /media/downloads /media/music \
