@@ -19,6 +19,7 @@ _TAG_KEYS: dict[str, tuple[str, ...]] = {
     "date": ("date", "year", "TDRC", "TYER", "\xa9day"),
     "tracknumber": ("tracknumber", "track", "TRCK", "trkn"),
     "discnumber": ("discnumber", "disc", "TPOS", "disk"),
+    # ID3 的歌词帧在 mutagen 里叫 ``USLT::<语言>``（如 USLT::chi），只写 "USLT" 永远取不到。
     "lyrics": ("lyrics", "unsyncedlyrics", "USLT", "\xa9lyr"),
 }
 _COVER_KEYS = ("APIC", "covr", "metadata_block_picture", "pictures")
@@ -41,6 +42,9 @@ def _first(audio: Any, keys: tuple[str, ...]) -> str | None:
     for key in keys:
         value = _safe_get(audio, key)
         if value is None:
+            # 前缀匹配：ID3 歌词帧是 ``USLT::chi`` 这类带语言后缀的键
+            value = _prefixed(audio, key)
+        if value is None:
             continue
         values = value if isinstance(value, (list, tuple)) else [value]
         for item in values:
@@ -50,6 +54,20 @@ def _first(audio: Any, keys: tuple[str, ...]) -> str | None:
             text = str(raw).strip()
             if text and not text.startswith("("):
                 return text
+    return None
+
+
+def _prefixed(audio: Any, key: str) -> Any:
+    tags = getattr(audio, "tags", None)
+    keys = getattr(tags, "keys", None)
+    if not callable(keys):
+        return None
+    try:
+        for candidate in keys():
+            if str(candidate).startswith(key + "::"):
+                return tags[candidate]
+    except (KeyError, ValueError, TypeError):
+        return None
     return None
 
 

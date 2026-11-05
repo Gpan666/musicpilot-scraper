@@ -47,3 +47,42 @@ class WatchPatch(BaseModel):
 
 class SettingsPatch(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
+
+
+class LibrarySearchRequest(BaseModel):
+    """手动刮削：在指定平台（或全部已启用平台）搜索。"""
+
+    path: str = Field(min_length=1, max_length=2000)
+    source: str = Field(default="", max_length=40)
+    title: str | None = Field(default=None, max_length=300)
+    artist: str | None = Field(default=None, max_length=300)
+    album: str | None = Field(default=None, max_length=300)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class LibraryScrapeApply(BaseModel):
+    """手动刮削：把选中的候选写进标签（只补空字段）。"""
+
+    path: str = Field(min_length=1, max_length=2000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    # 是否连同歌词一起补；fetch_lyrics 才真的去音源请求歌词
+    with_lyrics: bool = True
+    fetch_lyrics: bool = False
+    lyrics_only: bool = False
+    dry_run: bool = False
+
+
+class LibraryLyricsApply(BaseModel):
+    path: str = Field(min_length=1, max_length=2000)
+    lyrics: str = Field(default="", max_length=200_000)
+    dry_run: bool = False
+
+
+class LibraryFillRequest(BaseModel):
+    """自动扫描查漏补缺：补全元数据，绝不改动文件位置或链接关系。"""
+
+    sources: list[str] = Field(default_factory=list, max_length=10)
+    paths: list[str] = Field(default_factory=list, max_length=2000)
+    with_lyrics: bool = True
+    dry_run: bool = False
+    limit: int | None = Field(default=None, ge=1, le=2000)

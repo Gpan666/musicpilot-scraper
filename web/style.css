@@ -994,3 +994,142 @@ td.th-key { color: var(--text-2); width: 130px; }
   .song-diff-row .diff-key { grid-column: 1 / -1; font-size: var(--fs-tiny); }
   .song-files { grid-template-columns: 1fr; }
 }
+
+/* ---------------- 音乐库：横向标签 + 卡片详情 + 手动刮削 ---------------- */
+.lib-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 10px;
+}
+.lib-search {
+  flex: 1 1 220px; min-width: 160px; max-width: 340px;
+  padding: 8px 12px; border-radius: var(--radius-field);
+  border: 1px solid var(--outline); background: var(--surface-2); color: var(--text);
+  font-family: inherit; font-size: var(--fs-small);
+}
+.lib-search:focus { outline: none; border-color: var(--primary); }
+
+/* 横向滚动容器：一首歌一张标签，滚到哪算哪 */
+.lib-tags {
+  display: flex; gap: var(--gap);
+  overflow-x: auto; overflow-y: hidden;
+  padding: 2px 2px 12px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+.lib-tags > .empty { flex: 1 1 100%; }
+.lib-tag {
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+  width: 296px;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-card);
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), transform var(--transition);
+}
+.lib-tag:hover { border-color: var(--outline); transform: translateY(-1px); }
+.lib-tag.gap { border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.lib-tag.open {
+  width: min(560px, 92vw);
+  border-color: var(--primary);
+  background: var(--surface);
+  scroll-snap-align: center;
+}
+.lib-cover {
+  position: relative; width: 100%; aspect-ratio: 1 / 1;
+  border-radius: var(--radius-item); overflow: hidden;
+  background: var(--surface-3);
+  display: grid; place-items: center;
+}
+.lib-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.lib-cover-fallback { font-size: 34px; color: var(--text-3); }
+.lib-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.lib-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lib-title {
+  flex: 1 1 auto; min-width: 0;
+  font-size: var(--fs-body); font-weight: var(--wght-heading);
+  font-variation-settings: 'wght' var(--wght-heading);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lib-flag {
+  flex: 0 0 auto; padding: 1px 8px; border-radius: var(--radius-pill);
+  font-size: var(--fs-tiny);
+  background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn);
+}
+.lib-meta { display: flex; gap: 8px; align-items: baseline; font-size: var(--fs-small); }
+.lib-meta-key { flex: 0 0 64px; color: var(--text-3); font-size: var(--fs-footnote); }
+.lib-meta-value {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text);
+}
+.lib-meta-value.blank, .lib-detail-value.blank { color: var(--text-3); }
+.lib-lyrics {
+  margin-top: 2px; padding: 8px 10px;
+  border-radius: var(--radius-item);
+  background: var(--surface-3);
+  font-size: var(--fs-footnote); line-height: 1.5; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.lib-lyrics.blank { color: var(--text-3); font-style: italic; }
+.lib-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 2px; font-size: var(--fs-tiny); color: var(--text-3);
+}
+.lib-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-expand { flex: 0 0 auto; color: var(--primary-soft-text); }
+
+/* 展开后的卡片详情 */
+.lib-detail {
+  display: flex; flex-direction: column; gap: 12px;
+  padding-top: 12px; margin-top: 2px;
+  border-top: 1px solid var(--divider);
+  cursor: default;
+}
+.lib-detail-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px;
+}
+.lib-detail-row { display: flex; gap: 8px; font-size: var(--fs-small); min-width: 0; }
+.lib-detail-value { min-width: 0; overflow-wrap: anywhere; }
+.lib-path {
+  font-size: var(--fs-footnote); color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.lib-lyrics-full { display: flex; flex-direction: column; gap: 6px; }
+.lib-lyrics-full pre {
+  margin: 0; max-height: 220px; overflow: auto;
+  padding: 10px 12px; border-radius: var(--radius-item);
+  background: var(--surface-2); color: var(--text-2);
+  font-family: inherit; font-size: var(--fs-small); line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* 手动刮削结果 */
+.scrape-results { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.scrape-result {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px; border-radius: var(--radius-item);
+  background: var(--surface-2);
+}
+.scrape-score {
+  flex: 0 0 auto; width: 54px; height: 54px; border-radius: var(--radius-item);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--surface-3);
+}
+.scrape-score b { font-size: var(--fs-headline); line-height: 1.05; }
+.scrape-score span { font-size: var(--fs-tiny); color: var(--text-3); }
+.scrape-score.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.scrape-score.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.scrape-score.bad { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.scrape-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.scrape-title { font-size: var(--fs-body); font-weight: var(--wght-button); }
+.scrape-sub { font-size: var(--fs-small); color: var(--text-2); }
+.scrape-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.cand-chip.dim { opacity: .45; cursor: not-allowed; }
+@media (max-width: 720px) {
+  .lib-detail-grid { grid-template-columns: minmax(0, 1fr); }
+  .lib-tag { width: min(280px, 88vw); }
+  .scrape-result { flex-wrap: wrap; }
+}
