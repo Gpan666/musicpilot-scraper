@@ -14,3 +14,5 @@ tests
 docs/superpowers
 *.md
 !README.md
+# 由 scripts/sync_web.py 在构建阶段生成，不进构建上下文
+musicpilot/web

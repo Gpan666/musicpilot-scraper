@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -282,3 +283,16 @@ def test_clear_jobs_keeps_running_job(client: TestClient, workspace: dict[str, A
     assert cleared["removed"] >= 1
     remaining = client.get("/api/jobs").json()["jobs"]
     assert all(job["status"] in {"pending", "running"} for job in remaining)
+
+
+def test_frontend_assets_are_locatable(workspace: dict[str, Any]) -> None:
+    """The UI must be found whether it sits in the source tree or inside the package."""
+    from musicpilot.config import Settings
+
+    root = Path(__file__).resolve().parent.parent
+    for candidate in (root / "web", root / "musicpilot" / "web"):
+        settings = Settings(static_dir=candidate)
+        if (candidate / "index.html").is_file():
+            assert settings.web_dir == candidate
+        else:
+            assert (settings.web_dir / "index.html").is_file()
