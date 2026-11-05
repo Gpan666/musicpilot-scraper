@@ -76,7 +76,7 @@ docker run -d --name musicpilot \
 
 - `PUID` / `PGID` / `UMASK`：容器内进程的运行身份与文件权限，挂载目录写不进去时改成宿主属主（`id 用户名` 可查）。
 - 容器内只有两个约定：数据落 `/data`，媒体在 `/media`（源 `/media/downloads`、库 `/media/music`）。
-- 镜像由 `.cnb-docker.yml`（CNB 制品库）与 `.github/workflows/docker.yml`（GHCR）多架构构建；构建细节、发布链路与权限排查见 [docs/docker.md](docs/docker.md)。
+- 镜像由 `.cnb/docker.yml`（CNB 制品库，经 `.cnb.yml` include 生效）与 `.github/workflows/docker.yml`（GHCR）多架构构建；构建细节、发布链路与权限排查见 [docs/docker.md](docs/docker.md)。
 
 常用环境变量：`PUID`/`PGID`/`UMASK`（容器运行身份）、`MP_HOST_MEDIA_PATH`（媒体父目录）、`MP_TRANSFER_MODE`（copy/move/hardlink/symlink，默认 copy）、`MP_CONFIDENCE_THRESHOLD`（默认 0.62）、`MP_BROWSABLE_ROOTS`（目录选择器根，默认 `/media`）、`MP_WATCH_ENABLED`（自动刮削，默认 false）。完整见 `.env.example`。
 
