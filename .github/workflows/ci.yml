@@ -24,3 +24,8 @@ jobs:
         run: python -m pytest tests
       - name: Frontend syntax
         run: node --check web/app.js
+      - name: Frontend in wheel
+        run: |
+          python scripts/sync_web.py
+          python -m pip wheel . -w dist --no-deps
+          python -c "import glob, zipfile; names = zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); assert any(n.endswith('musicpilot/web/index.html') for n in names), names"
