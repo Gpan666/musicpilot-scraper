@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS job_items (
     title TEXT NOT NULL DEFAULT '',
     artist TEXT,
     album TEXT,
+    album_artist TEXT,
     year INTEGER,
     track_number INTEGER,
     detail TEXT NOT NULL DEFAULT '',
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS job_items (
     local_title TEXT NOT NULL DEFAULT '',
     local_artist TEXT,
     local_album TEXT,
+    local_album_artist TEXT,
     local_year INTEGER,
     local_track_number INTEGER,
     cover_url TEXT,
@@ -126,10 +128,12 @@ class Store:
                 "local_title": "TEXT NOT NULL DEFAULT ''",
                 "local_artist": "TEXT",
                 "local_album": "TEXT",
+                "local_album_artist": "TEXT",
                 "local_year": "INTEGER",
                 "local_track_number": "INTEGER",
                 "cover_url": "TEXT",
                 "candidates": "TEXT NOT NULL DEFAULT '[]'",
+                "album_artist": "TEXT",
             },
         )
         _add_columns(connection, "jobs", {"title": "TEXT NOT NULL DEFAULT ''"})
@@ -252,6 +256,7 @@ class Store:
                     item.title,
                     item.artist,
                     item.album,
+                    item.album_artist,
                     item.year,
                     item.track_number,
                     item.detail,
@@ -259,6 +264,7 @@ class Store:
                     item.local_title,
                     item.local_artist,
                     item.local_album,
+                    item.local_album_artist,
                     item.local_year,
                     item.local_track_number,
                     item.cover_url,
@@ -273,10 +279,11 @@ class Store:
                 """
                 INSERT INTO job_items (
                     job_id, source, target, mode, status, confidence, source_name,
-                    title, artist, album, year, track_number, detail, link_target,
-                    local_title, local_artist, local_album, local_year,
-                    local_track_number, cover_url, candidates, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    title, artist, album, album_artist, year, track_number, detail,
+                    link_target, local_title, local_artist, local_album,
+                    local_album_artist, local_year, local_track_number, cover_url,
+                    candidates, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
