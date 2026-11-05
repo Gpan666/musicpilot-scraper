@@ -1,6 +1,7 @@
 main:
   pull_request.merged:
-    - imports: https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/github-sync.yml
+    - imports:
+        - https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/github-sync.yml
       stages:
         - name: create github repo if not exists
           script: |
