@@ -78,7 +78,7 @@ docker compose up -d --build
 
 ### 4.1 用现成的通用镜像
 
-不想自己构建就用发布好的多架构镜像（amd64 / arm64 / armv7），一份镜像跑遍 NAS 与服务器。
+不想自己构建就用发布好的双架构镜像（amd64 + arm64），一份镜像跑遍 NAS 与服务器。
 Docker Hub 与 GHCR 同步发布（`.cnb/docker-hub.yml` / `.github/workflows/docker.yml`），按网络可达性挑一个：
 
 ```bash

@@ -1,12 +1,12 @@
 # 通用镜像：把 MusicPilot Scraper 做成一个可移植的容器
 
-目标：一份镜像跑在 amd64 / arm64 / armv7 上，别人不必懂 Python，也不必自己构建。
+目标：一份双架构镜像（amd64 + arm64），别人不必懂 Python，也不必自己构建。
 
 ## 1. 镜像本身为什么「通用」
 
 | 关注点 | 做法 |
 | --- | --- |
-| 架构 | 发布多架构 manifest（`linux/amd64,linux/arm64,linux/arm/v7`），拉取时由 Docker 自动选择 |
+| 架构 | 发布双架构 manifest（`linux/amd64,linux/arm64`），拉取时由 Docker 自动选择 |
 | 前端 | 原生 HTML/JS，随 wheel 装进 venv（`musicpilot/web`），镜像里无需单独拷目录 |
 | 依赖 | 多阶段构建，运行镜像只带 `/opt/venv` + `gosu` + `tzdata`，不含 dev 依赖 |
 | 权限 | `PUID` / `PGID` / `UMASK`，NAS 上目录属主不是 1000 也能写 |
