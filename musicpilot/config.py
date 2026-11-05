@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     session_secret: str = ""
 
     transfer_mode: TransferMode = TransferMode.COPY
-    naming_template: str = "{artist}/{album}/{track:02d} - {title}"
+    naming_template: str = "{album}/{album_artist}/{track:02d} - {title}"
     conflict_policy: ConflictPolicy = ConflictPolicy.RENAME
     symlink_relative: bool = True
     write_tags: bool = True

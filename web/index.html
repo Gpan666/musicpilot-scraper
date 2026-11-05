@@ -111,6 +111,24 @@
     </div>
   </div>
 
+  <!-- 任务明细抽屉：从右侧滑出，盖住列表下沿，不再把页面拉到底部 -->
+  <div id="drawer" class="drawer-mask hidden" aria-hidden="true">
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <div class="drawer-head">
+        <div>
+          <h2 id="drawer-title">任务明细</h2>
+          <p id="drawer-sub" class="drawer-sub"></p>
+        </div>
+        <button id="drawer-close" class="icon-btn" aria-label="关闭明细">✕</button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+      <div class="drawer-foot">
+        <span id="drawer-stat" class="small muted"></span>
+        <a id="drawer-csv" class="ghost-btn small" href="#">导出表格（CSV）</a>
+      </div>
+    </aside>
+  </div>
+
   <!-- 文件夹选择器 -->
   <div id="picker" class="overlay hidden">
     <div class="dialog picker-dialog">

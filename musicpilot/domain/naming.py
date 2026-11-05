@@ -23,13 +23,15 @@ TEMPLATE_FIELDS = frozenset(
     }
 )
 
-DEFAULT_TEMPLATE = "{artist}/{album}/{track:02d} - {title}"
+# 浏览器与播放器普遍按「专辑 → 专辑艺术家 → 歌曲」组织，默认就按这个结构落库。
+DEFAULT_TEMPLATE = "{album}/{album_artist}/{track:02d} - {title}"
 TEMPLATE_PRESETS = (
-    {"name": "歌手 / 专辑 / 音轨", "template": DEFAULT_TEMPLATE},
-    {"name": "歌手 / 专辑(年份) / 音轨", "template": "{artist}/{album} ({year})/{track:02d} - {title}"},
+    {"name": "专辑 / 专辑歌手 / 音轨（推荐）", "template": DEFAULT_TEMPLATE},
+    {"name": "专辑(年份) / 专辑歌手 / 音轨", "template": "{album} ({year})/{album_artist}/{track:02d} - {title}"},
+    {"name": "专辑 / 专辑歌手 / 原文件名", "template": "{album}/{album_artist}/{filename}"},
+    {"name": "歌手 / 专辑 / 音轨", "template": "{artist}/{album}/{track:02d} - {title}"},
     {"name": "歌手 / 单曲", "template": "{artist}/{artist} - {title}"},
     {"name": "扁平目录", "template": "{artist} - {title}"},
-    {"name": "保留原文件名", "template": "{artist}/{album}/{filename}"},
 )
 
 _ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

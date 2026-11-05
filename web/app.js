@@ -48,6 +48,7 @@ const state = {
   options: { organize: true, skipLowConfidence: false },
   picker: { target: null, path: '', root: '', parent: null, entries: [], loading: false },
   plan: { jobId: null, items: [], choices: new Map(), filter: 'all' },
+  drawer: { jobId: null },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -316,13 +317,17 @@ function capabilityBadge(item) {
   if (item.available === false) return '<span class="badge bad">不可用</span>';
   return '<span class="badge info">未自检</span>';
 }
+const STATUS_BADGES = {
+  completed: ['ok', '已完成'], running: ['info', '运行中'], pending: ['info', '排队中'],
+  failed: ['bad', '失败'], cancelled: ['warn', '已取消'], done: ['ok', '成功'],
+  skipped: ['warn', '跳过'], planned: ['info', '计划中'], needs_review: ['warn', '需确认'],
+};
+function statusLabel(status) {
+  const entry = STATUS_BADGES[status];
+  return entry ? entry[1] : String(status || '未知');
+}
 function statusBadge(status) {
-  const map = {
-    completed: ['ok', '已完成'], running: ['info', '运行中'], pending: ['info', '排队中'],
-    failed: ['bad', '失败'], cancelled: ['warn', '已取消'], done: ['ok', '成功'],
-    skipped: ['warn', '跳过'], planned: ['info', '计划中'], needs_review: ['warn', '需确认'],
-  };
-  const [tone, label] = map[status] || ['info', status];
+  const [tone, label] = STATUS_BADGES[status] || ['info', status];
   return `<span class="badge ${tone}">${esc(label)}</span>`;
 }
 
@@ -809,7 +814,9 @@ async function renderJobs() {
         <span>已处理 ${active.processed || 0} / ${active.total || '—'}</span>
         <span>成功 ${active.done || 0} · 跳过 ${active.skipped || 0} · 失败 ${active.failed || 0}</span></div>
     </div>` : '';
-  const rows = jobs.map((job) => `<tr>
+  const rows = jobs.map((job) => {
+    const running = job.status === 'running' || job.status === 'pending';
+    return `<tr>
     <td class="truncate" title="${esc(jobNote(job))}">${esc(jobLabel(job))}</td>
     <td>${job.dry_run ? '预览' : jobKind(job)}</td>
     <td>${statusBadge(job.status)}</td>
@@ -819,7 +826,9 @@ async function renderJobs() {
       <button class="ghost-btn small" data-job="${esc(job.id)}">明细</button>
       <a class="ghost-btn small" href="/api/jobs/${esc(job.id)}/report">导出表格</a>
       ${job.dry_run ? `<button class="ghost-btn small" data-plan="${esc(job.id)}">打开计划</button>` : ''}
-    </div></td></tr>`).join('');
+      <button class="ghost-btn small danger-text" data-del="${esc(job.id)}" ${running ? 'disabled title="任务正在运行，先取消再删除"' : ''}>删除</button>
+    </div></td></tr>`;
+  }).join('');
   const watch = state.watch || {};
   const watchBar = `
     <div class="panel"><div class="between">
@@ -830,12 +839,14 @@ async function renderJobs() {
       <button class="ghost-btn" data-go="settings">${watch.enabled ? '调整' : '去开启'}</button>
     </div></div>`;
   $('page').innerHTML = `${watchBar}${progressCard}
-    <div class="panel"><div class="panel-head"><div><h2>全部任务</h2><p>每次只允许一个任务运行，避免文件竞争</p></div>
-      <button class="ghost-btn" id="refresh-jobs">刷新</button></div>
+    <div class="panel"><div class="panel-head"><div><h2>全部任务</h2><p>点「明细」右侧滑出详情；每次只允许一个任务运行，避免文件竞争</p></div>
+      <div class="btn-row">
+        <button class="ghost-btn" id="refresh-jobs">刷新</button>
+        <button class="ghost-btn danger-text" id="clear-jobs" ${jobs.length ? '' : 'disabled'}>清空记录</button>
+      </div></div>
       <div class="table-wrap"><table><thead><tr><th>文件 / 歌曲名</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="6" class="empty">暂无任务</td></tr>'}</tbody></table></div>
-    </div>
-    <div id="job-items"></div>`;
+    </div>`;
   $('refresh-jobs').addEventListener('click', renderJobs);
   document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
   const cancel = $('cancel-job');
@@ -848,12 +859,59 @@ async function renderJobs() {
     state.previewJob = { id: b.dataset.plan, dry_run: true };
     go('plan');
   }));
+  document.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
+    const job = (state.jobs || []).find((row) => row.id === b.dataset.del) || {};
+    if (!confirm(`删除任务记录「${jobLabel(job)}」？\n明细会一起删掉，音乐库里已经整理好的文件不受影响。`)) return;
+    try {
+      await api(`/api/jobs/${b.dataset.del}`, { method: 'DELETE' });
+      if (state.drawer.jobId === b.dataset.del) closeDrawer();
+      toast('任务记录已删除');
+      await renderJobs();
+    } catch (error) { toast(error.message, true); }
+  }));
+  const clear = $('clear-jobs');
+  if (clear) clear.addEventListener('click', async () => {
+    if (!confirm('清空全部任务记录？\n明细会一起删除，正在运行的任务会保留，音乐库里的文件不受影响。')) return;
+    try {
+      const result = await api('/api/jobs', { method: 'DELETE' });
+      closeDrawer();
+      toast(result.message || '任务记录已清空');
+      await renderJobs();
+    } catch (error) { toast(error.message, true); }
+  });
+}
+
+/* 任务明细：从右侧滑出的抽屉，不再把页面拉到最下面去找。 */
+function openDrawer(title, sub) {
+  $('drawer-title').textContent = title;
+  $('drawer-sub').textContent = sub || '';
+  $('drawer').classList.remove('hidden');
+  $('drawer').setAttribute('aria-hidden', 'false');
+  document.body.classList.add('drawer-open');
+}
+function closeDrawer() {
+  $('drawer').classList.add('hidden');
+  $('drawer').setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('drawer-open');
+  state.drawer.jobId = null;
 }
 
 async function showJobItems(jobId) {
+  const job = (state.jobs || []).find((row) => row.id === jobId) || {};
   let items = [];
+  openDrawer('任务明细', `${jobLabel(job)} · ${statusLabel(job.status)} · ${fmtTime(job.created_at)}`);
+  $('drawer-body').innerHTML = '<div class="empty">正在读取明细…</div>';
+  $('drawer-stat').textContent = '';
+  $('drawer-csv').href = `/api/jobs/${encodeURIComponent(jobId)}/report`;
   try { items = (await api(`/api/jobs/${jobId}/items?limit=500`)).items || []; }
-  catch (error) { toast(error.message, true); return; }
+  catch (error) { $('drawer-body').innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  state.drawer.jobId = jobId;
+  const done = items.filter((item) => item.status === 'done').length;
+  const failed = items.filter((item) => item.status === 'failed').length;
+  const skipped = items.filter((item) => item.status === 'skipped').length;
+  $('drawer-stat').textContent = items.length
+    ? `共 ${items.length} 项 · 成功 ${done} · 跳过 ${skipped} · 失败 ${failed} · 任务号 ${jobId}`
+    : `任务号 ${jobId}`;
   const rows = items.map((item) => `<tr>
     <td class="path-cell"><div class="path-name" title="${esc(fileName(item.source))}">${esc(fileName(item.source))}</div>
       <div class="path-dir with-title" data-full="${esc(dirName(item.source))}">${esc(shortPath(dirName(item.source)))}</div></td>
@@ -862,13 +920,11 @@ async function showJobItems(jobId) {
     <td class="mode-cell">${esc(item.mode_label || modeLabel(item.mode))}</td>
     <td>${statusBadge(item.status)}</td>
     <td class="muted small detail-cell with-title" data-full="${esc(item.detail)}">${esc(detailBrief(item))}</td></tr>`).join('');
-  $('job-items').innerHTML = `<div class="panel"><div class="panel-head"><div><h2>任务明细</h2>
-      <p>${esc(fileName(items[0] && items[0].source) || '本次任务')} · 说明列只写两条中文摘要，鼠标停留可看完整记录 · <span class="mono">${esc(jobId)}</span></p></div></div>
-    <div class="table-wrap"><table class="items-table"><thead><tr><th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" class="empty">暂无明细</td></tr>'}</tbody></table></div></div>`;
+  $('drawer-body').innerHTML = `<div class="table-wrap"><table class="items-table"><thead><tr>
+      <th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="empty">这次任务没有明细</td></tr>'}</tbody></table></div>`;
   // 悬停提示在渲染后统一绑定，避免把长路径塞进 innerHTML 属性。
-  $('job-items').querySelectorAll('.with-title').forEach((node) => { node.title = node.dataset.full || ''; });
-  $('job-items').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  $('drawer-body').querySelectorAll('.with-title').forEach((node) => { node.title = node.dataset.full || ''; });
 }
 
 async function createJob(kind, dryRun, forcedPaths, choices) {
@@ -985,7 +1041,8 @@ function renderSettings() {
       <div class="mode-cards">${modeCards}</div>
     </div>
     <div class="panel"><div class="panel-head"><div><h2>命名与匹配</h2>
-      <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code> <span class="small muted">${esc(TEMPLATE_FIELD_LABELS[f] || '')}</span>`).join(' · ')}</p></div></div>
+      <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code> <span class="small muted">${esc(TEMPLATE_FIELD_LABELS[f] || '')}</span>`).join(' · ')}</p>
+        <p>默认按「专辑名 / 专辑歌手 / 歌曲文件」建目录，播放器与音乐服务器都能直接认</p></div></div>
       <div class="grid cols-2">
         <label class="field"><span class="field-label">命名模板预设</span>
           <select id="preset">${presets}</select></label>
@@ -1236,9 +1293,14 @@ $('picker-confirm').addEventListener('click', () => {
   closePicker();
   toast('已选择文件夹，记得保存设置');
 });
+$('drawer-close').addEventListener('click', closeDrawer);
+$('drawer').addEventListener('click', (event) => {
+  if (event.target === $('drawer')) closeDrawer();
+});
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!$('picker').classList.contains('hidden')) closePicker();
+  if (!$('drawer').classList.contains('hidden')) closeDrawer();
+  else if (!$('picker').classList.contains('hidden')) closePicker();
   else if (!$('modal').classList.contains('hidden')) closeModal();
 });
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {

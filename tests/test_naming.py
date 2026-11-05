@@ -27,7 +27,21 @@ def test_default_template() -> None:
     result = render_relative(
         DEFAULT_TEMPLATE, META, extension=".flac", source_filename="11 song.flac"
     )
-    assert result == Path("Queen/A Night at the Opera/11 - Bohemian Rhapsody.flac")
+    # 默认结构：专辑名 → 专辑艺术家 → 歌曲文件
+    assert result == Path("A Night at the Opera/Queen/11 - Bohemian Rhapsody.flac")
+
+
+def test_default_template_uses_album_artist() -> None:
+    """专辑歌手优先于普通歌手，多歌手合辑也能归到一个目录下。"""
+    meta = TrackMetadata(
+        title="Under Pressure",
+        artist="Queen & David Bowie",
+        album="Hot Space",
+        album_artist="Queen",
+        track_number=1,
+    )
+    result = render_relative(DEFAULT_TEMPLATE, meta, extension=".flac")
+    assert result.parts[:2] == ("Hot Space", "Queen")
 
 
 def test_year_and_unknown_placeholder() -> None:
