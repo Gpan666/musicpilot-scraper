@@ -42,20 +42,36 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 构建阶段两个可调参数：`PYTHON_VERSION`（默认 3.12）、`PIP_INDEX_URL`（换国内 PyPI 镜像）。
 
-## 4. 发布链路（仓库已配好）
+## 4. 发布链路（仓库已配好，开箱即用）
+
+根目录 `.cnb.yml` 只做入口，把两套流水线 include 进来，互不干扰：
 
 | 平台 | 文件 | 触发 | 产物 |
 | --- | --- | --- | --- |
-| CNB | `.cnb-docker.yml` | main 推送 / tag 推送 / PR | `<CNB_DOCKER_REGISTRY>/<仓库路径>`（PR 只构建不推送） |
-| GitHub | `.github/workflows/docker.yml` | main 推送 / tag / PR | `ghcr.io/<owner>/<repo>` |
+| CNB | `.cnb/docker.yml` | main 推送 / tag 推送 / PR | `<CNB_DOCKER_REGISTRY>/<仓库路径>`（PR 只构建不推送） |
+| CNB | `.cnb/github-sync.yml` | main 推送 | 同步代码到 GitHub（原有逻辑，未改动） |
+| GitHub | `.github/workflows/docker.yml` | main 推送 / tag / PR / Release 发布 | `ghcr.io/<owner>/<repo>` |
 
-CNB 上是**独立流水线文件**，不与你现有的 `.cnb.yml`（GitHub 同步）互相覆盖。要启用：
+```yaml title=".cnb.yml"
+include:
+  - .cnb/github-sync.yml
+  - .cnb/docker.yml
+```
 
-1. 把 `.cnb-docker.yml` 的内容追加到 `.cnb.yml`，或在仓库设置里把它设为流水线配置路径；
-2. 推一次 main，等 `docker-latest` 这个 stage 跑完；
-3. 之后任何人 `docker pull docker.cnb.cool/tsbyj.666/musicpilot-scraper:latest` 即可。
+同一分支下的多段 pipeline **并发执行**，某个文件写坏了不会连带另一个；同步 GitHub 用的密钥只在
+`.cnb/github-sync.yml` 里 import，镜像流水线自带 `services: docker` 与 buildx，两边不互相依赖。
 
-构建缓存以 `:buildcache` 标签存回制品库，第二次构建只重跑改动的层。
+产物标签：
+
+| 触发 | 标签 |
+| --- | --- |
+| main 推送 | `latest`、`sha-<短 SHA>` |
+| tag 推送 | `<tag 名>`、`sha-<短 SHA>`；`v1.2.3` 这种正式版本同时覆盖 `latest` |
+| PR | 只在 amd64 构建验证，不推送 |
+
+- 手工重发某个版本：构建时选 **tag 推送**（`tag_push`）事件并填 tag 名，不用重新打 tag。
+- 镜像构建加了 `release` 锁，同一分支/tag 连续推送时旧构建不会和新构建抢着推同一批标签。
+- 构建缓存以 `:buildcache` 标签存回制品库，第二次构建只重跑改动的层。
 
 ## 5. 权限怎么调
 

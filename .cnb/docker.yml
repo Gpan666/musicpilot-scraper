@@ -1,0 +1,72 @@
+# 镜像发布流水线（CNB Docker 制品库）
+#
+# 通过根目录 .cnb.yml 的 include 引入，与 GitHub 同步流水线并存：
+# 同分支多段 pipeline 会并发执行，互不影响。
+#
+# 触发与产物：
+#   main  push   → :latest + :sha-<短 SHA>
+#   任意 tag     → :<tag>（语义化 tag 同时更新 :latest）+ :sha-<短 SHA>
+#   PR           → 只在 amd64 构建验证，不推送
+#
+# 手工触发：构建时选择 tag 推送事件（tag_push）即可重发某个版本，无需重新打 tag。
+
+.docker-image: &docker-image
+  services:
+    - docker
+  env:
+    IMAGE_REPO: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+    PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+
+.docker-stages: &docker-stages
+  - name: docker login
+    script: docker login -u "${CNB_TOKEN_USER_NAME}" -p "${CNB_TOKEN}" "${CNB_DOCKER_REGISTRY}"
+  # 同一分支/tag 连续推送时，旧构建直接作废，省得抢着推同一批 tag
+  - name: build and push
+    lock: release
+    script: |
+      set -e
+
+      # tag 推送时 CNB_BRANCH 就是 tag 名
+      if [ "${CNB_IS_TAG}" = "true" ]; then
+        VERSION="${CNB_BRANCH}"
+      else
+        VERSION=latest
+      fi
+
+      TAGS="-t ${IMAGE_REPO}:${VERSION} -t ${IMAGE_REPO}:sha-${CNB_COMMIT_SHORT}"
+      # v1.2.3 这种正式版本同时覆盖 latest，pull latest 始终是最新正式版
+      if printf '%s' "${VERSION}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        TAGS="${TAGS} -t ${IMAGE_REPO}:latest"
+      fi
+
+      echo "推送标签: ${TAGS}"
+      docker buildx build \
+        --platform "${PLATFORMS}" \
+        --build-arg PYTHON_VERSION=3.12 \
+        --cache-from type=registry,ref="${IMAGE_REPO}:buildcache" \
+        --cache-to type=registry,ref="${IMAGE_REPO}:buildcache",mode=max,image-manifest=true,oci-mediatypes=true \
+        --label org.opencontainers.image.source="${CNB_WEB_ENDPOINT}/${CNB_REPO_SLUG}" \
+        --label org.opencontainers.image.revision="${CNB_COMMIT}" \
+        --label org.opencontainers.image.version="${VERSION}" \
+        ${TAGS} \
+        --push .
+
+main:
+  push:
+    - name: docker-latest
+      <<: *docker-image
+      stages: *docker-stages
+
+  pull_request:
+    - name: docker-build-check
+      services:
+        - docker
+      stages:
+        - name: build without push
+          script: docker buildx build --platform linux/amd64 --build-arg PYTHON_VERSION=3.12 .
+
+$:
+  tag_push:
+    - name: docker-tag
+      <<: *docker-image
+      stages: *docker-stages
