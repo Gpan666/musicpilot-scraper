@@ -27,7 +27,7 @@
   services:
     - docker
   env:
-    PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+    PLATFORMS: linux/amd64,linux/arm64
 
 # 先确认密钥齐不齐：缺项就跳过推送（不失败），齐了才登录
 .docker-hub-stages: &docker-hub-stages
