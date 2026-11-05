@@ -46,11 +46,11 @@ class Settings(BaseSettings):
     write_tags: bool = True
     embed_cover: bool = True
     write_lyrics: bool = False
-    metadata_sources: str = "local,musicbrainz,netease"
+    metadata_sources: str = "local,musicbrainz,netease,qq,kugou,kuwo"
     confidence_threshold: float = 0.62
     unknown_placeholder: str = "未知"
 
-    musicbrainz_user_agent: str = "MusicPilot-Scraper/2.0 (self-hosted personal use)"
+    musicbrainz_user_agent: str = "MusicPilot-Scraper/1.0 (self-hosted personal use)"
     http_proxy: str = ""
     request_timeout: float = 20.0
 
@@ -150,8 +150,9 @@ class RuntimeSettings(BaseModel):
     write_tags: bool = True
     embed_cover: bool = True
     write_lyrics: bool = False
-    metadata_sources: list[Literal["local", "musicbrainz", "netease"]] = Field(
-        default_factory=lambda: ["local", "musicbrainz", "netease"]
+    # 在线音源：网易云、QQ音乐、酷狗、酷我、MusicBrainz；本地标签始终参与
+    metadata_sources: list[Literal["local", "musicbrainz", "netease", "qq", "kugou", "kuwo"]] = (
+        Field(default_factory=lambda: ["local", "musicbrainz", "netease", "qq", "kugou", "kuwo"])
     )
     confidence_threshold: float = Field(default=0.62, ge=0.0, le=1.0)
     unknown_placeholder: str = Field(default="未知", min_length=1, max_length=40)

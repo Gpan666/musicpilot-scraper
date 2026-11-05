@@ -16,8 +16,22 @@ router = APIRouter(tags=["cover"])
 
 # ``fetch_cover`` is only ever pointed at artwork hosts by the providers; the
 # proxy keeps an explicit list so it cannot be used as an open relay.
-_ALLOWED_HOSTS = frozenset({"music.163.com", "musicbrainz.org"})
-_ALLOWED_SUFFIXES = (".music.126.net", ".archive.org")
+_ALLOWED_HOSTS = frozenset(
+    {
+        "music.163.com",  # 网易云
+        "musicbrainz.org",  # MusicBrainz
+        "y.gtimg.cn",  # QQ 音乐
+        "www.kuwo.cn",  # 酷我
+    }
+)
+_ALLOWED_SUFFIXES = (
+    ".music.126.net",
+    ".archive.org",
+    ".gtimg.cn",  # QQ 音乐图片 CDN
+    ".kugou.com",  # 酷狗
+    ".kuwo.cn",  # 酷我
+    ".kwcdn.com",  # 酷我图片 CDN
+)
 _CACHE = {"Cache-Control": "private, max-age=86400"}
 
 

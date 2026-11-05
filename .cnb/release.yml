@@ -1,0 +1,138 @@
+# 版本发布流水线：打 tag → CNB Release + GitHub Release 双写
+#
+# 由根目录 .cnb.yml include 引入。和镜像流水线分工不同：
+#   .cnb/docker-hub.yml 管「镜像推哪、打哪些语义化标签」
+#   本文件               管「版本号校验、Release 说明、两边 Release 都要有」
+# 两条都挂 tag_push，互不阻塞：镜像推失败不影响 Release，反过来也一样。
+#
+# 触发：打 v* 或 x.y.z 形式的 tag。三步：
+#   1. 校验 tag 与代码里的版本号一致（pyproject.toml / musicpilot/__init__.py），
+#      不一致直接失败——避免镜像是 1.0.0、Release 说明里却写 1.0.1
+#   2. 生成 Release 说明：优先取 CHANGELOG.md 里对应版本的小节，没有就用 git log 自动归类
+#   3. 建 / 更新 CNB Release（git:release，overlying 保证可重跑），再同步一份到 GitHub Release
+#
+# 需要的密钥（密钥仓库 tsbyj.666/github-sync-secrets/github-sync.yml）：
+#   GITHUB_USERNAME / GITHUB_ACCESS_TOKEN（token 需要 repo 权限才能写 Release）
+# 缺 GITHUB_ACCESS_TOKEN 时只发 CNB Release，并打一行警告，不让流水线变红。
+#
+# 前提：被引用文件声明了
+#   allow_slugs: tsbyj.666/musicpilot-scraper
+#   allow_events: [tag_push, api_trigger]
+#   allow_branches: [main]
+
+$:
+  tag_push:
+    - name: release
+      imports:
+        - https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/github-sync.yml
+      stages:
+        - name: 校验版本号并生成说明
+          script: |
+            set -e
+            TAG="${CNB_BRANCH}"
+            VERSION="${TAG#v}"
+
+            PYPROJECT_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n1)
+            CODE_VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' musicpilot/__init__.py | head -n1)
+            echo "tag=${TAG} pyproject=${PYPROJECT_VERSION} code=${CODE_VERSION}"
+            if [ "${PYPROJECT_VERSION}" != "${VERSION}" ] || [ "${CODE_VERSION}" != "${VERSION}" ]; then
+              echo "版本号不一致：tag ${VERSION} / pyproject ${PYPROJECT_VERSION} / 代码 ${CODE_VERSION}" >&2
+              echo "发版前请把 musicpilot/__init__.py 与 pyproject.toml 的 version 一起改掉" >&2
+              exit 1
+            fi
+
+            mkdir -p .release
+            NOTES=.release/notes.md
+            if [ -f CHANGELOG.md ] && grep -qE "^## \[?${VERSION}\]?" CHANGELOG.md; then
+              awk -v ver="${VERSION}" '
+                $0 ~ "^## \\[?" ver "\\]?" {flag=1; next}
+                flag && /^## / {exit}
+                flag {print}
+              ' CHANGELOG.md | cat -s > "${NOTES}"
+              echo "Release 说明取自 CHANGELOG.md 的 ${VERSION} 小节"
+            else
+              PREV=$(git tag --sort=-v:refname | grep -vx "${TAG}" | head -n1 || true)
+              {
+                echo "## 变更"
+                echo
+                if [ -n "${PREV}" ]; then
+                  echo "自 ${PREV} 以来："
+                  echo
+                  git log --no-merges --pretty=format:'- %s（%h）' "${PREV}..HEAD"
+                else
+                  git log --no-merges --pretty=format:'- %s（%h）' -n 50
+                fi
+                echo
+              } > "${NOTES}"
+              echo "Release 说明由 git log 生成（上一个版本：${PREV:-无}）"
+            fi
+
+            {
+              echo
+              echo "## 镜像"
+              echo
+              echo '```bash'
+              echo "docker pull docker.io/${DOCKER_HUB_NAMESPACE:-tsbyj}/musicpilot-scraper:${VERSION}"
+              echo "docker pull docker.io/${DOCKER_HUB_NAMESPACE:-tsbyj}/musicpilot-scraper:latest"
+              echo '```'
+              echo
+              echo "多架构：linux/amd64、linux/arm64、linux/arm/v7。"
+            } >> "${NOTES}"
+
+            if printf '%s' "${VERSION}" | grep -q -- '-'; then
+              echo "预发布版本，Release 会标成 Pre-release"
+            fi
+            wc -l "${NOTES}"
+
+        - name: 创建 CNB Release
+          type: git:release
+          options:
+            # overlying=true：同版本再推一次就是更新说明，不会先删再建
+            overlying: true
+            title: MusicPilot Scraper ${CNB_BRANCH}
+            descriptionFromFile: .release/notes.md
+
+        - name: 同步 GitHub Release
+          script: |
+            set -e
+            if [ -z "${GITHUB_ACCESS_TOKEN}" ]; then
+              echo "缺少 GITHUB_ACCESS_TOKEN，跳过 GitHub Release（CNB Release 已发）"
+              exit 0
+            fi
+            TAG="${CNB_BRANCH}"
+            VERSION="${TAG#v}"
+            REPO="${GITHUB_USERNAME}/${CNB_REPO_NAME}"
+            API_VERSION="2022-11-28"
+            AUTH="Authorization: Bearer ${GITHUB_ACCESS_TOKEN}"
+
+            python3 - "$TAG" "$VERSION" <<'PY' > .release/payload.json
+            import json, pathlib, sys
+            tag, version = sys.argv[1], sys.argv[2]
+            notes = pathlib.Path(".release/notes.md").read_text(encoding="utf-8")
+            print(json.dumps({
+                "tag_name": tag,
+                "name": f"MusicPilot Scraper {version}",
+                "body": notes,
+                "draft": False,
+                "prerelease": "-" in version,
+            }, ensure_ascii=False))
+            PY
+
+            # 已存在就 PATCH 更新，不存在才 POST 创建，重跑不会报 422
+            CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "${AUTH}" -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" || true)
+            if [ "${CODE}" = "200" ]; then
+              echo "GitHub Release ${TAG} 已存在，更新说明"
+              METHOD=PATCH
+              URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+            else
+              echo "创建 GitHub Release ${TAG}"
+              METHOD=POST
+              URL="https://api.github.com/repos/${REPO}/releases"
+            fi
+            curl -sS -f -X "${METHOD}" \
+              -H "${AUTH}" -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "${URL}" -d @.release/payload.json > /dev/null
+            echo "GitHub Release 完成：https://github.com/${REPO}/releases/tag/${TAG}"
