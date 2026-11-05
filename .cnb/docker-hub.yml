@@ -1,0 +1,101 @@
+# Docker Hub 镜像发布流水线
+#
+# 通过根目录 .cnb.yml 的 include 引入，与 CNB 制品库、GitHub 同步两套流水线并存：
+# 同分支多段 pipeline 会并发执行，某个文件写坏了不会拖累另外两个。
+#
+# 与 .cnb/docker.yml 的区别只在「推到哪」：这里推 Docker Hub，CNB 制品库那条照旧。
+#
+# 触发与产物（镜像名固定 docker.io/<DOCKER_HUB_NAMESPACE>/<仓库名小写>）：
+#   main  push   → :latest + :sha-<短 SHA>
+#   任意 tag     → :<tag>（语义化 tag 同时更新 :latest）+ :sha-<短 SHA>
+#   手工触发     → 选 tag 推送事件重发某个版本；不接 PR，免得 PR 里就能改写 Docker Hub 标签
+#
+# 需要的密钥：在密钥仓库 tsbyj.666/github-sync-secrets 的 docker-hub.yml 里声明
+#   DOCKER_HUB_NAMESPACE: 你的 Docker Hub 用户名（或组织名）
+#   DOCKER_HUB_USERNAME:  Docker Hub 登录名
+#   DOCKER_HUB_TOKEN:     Docker Hub 访问令牌（Access Token，不是账号密码）
+#
+# 缺密钥时不拖累其它流水线：文件不存在整段流水线跳过（ignoreError），
+# 文件在但缺项则只跳过推送、照常构建验证。前提是被引用文件声明了：
+#   allow_slugs: tsbyj.666/musicpilot-scraper
+#   allow_events: [push, tag_push, api_trigger]
+#   allow_branches: [main]
+
+.docker-hub-image: &docker-hub-image
+  services:
+    - docker
+  env:
+    PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+
+# 先确认密钥齐不齐：缺项就跳过推送（不失败），齐了才登录
+.docker-hub-stages: &docker-hub-stages
+  - name: docker hub login
+    script: |
+      MISSING=""
+      for key in DOCKER_HUB_NAMESPACE DOCKER_HUB_USERNAME DOCKER_HUB_TOKEN; do
+        eval "value=\${${key}}"
+        [ -n "${value}" ] || MISSING="${MISSING} ${key}"
+      done
+      if [ -n "${MISSING}" ]; then
+        echo "缺少 Docker Hub 凭据:${MISSING}，本次跳过推送"
+        echo "##[set-output push=false]"
+        exit 0
+      fi
+      docker login -u "${DOCKER_HUB_USERNAME}" -p "${DOCKER_HUB_TOKEN}" docker.io
+    exports:
+      push: PUSH_ENABLED
+
+  - name: build and push
+    lock: release
+    script: |
+      set -e
+
+      # tag 推送时 CNB_BRANCH 就是 tag 名
+      if [ "${CNB_IS_TAG}" = "true" ]; then
+        VERSION="${CNB_BRANCH}"
+      else
+        VERSION=latest
+      fi
+
+      if [ "${PUSH_ENABLED}" = "false" ]; then
+        echo "无 Docker Hub 凭据，仅本地构建验证"
+        TAGS="-t musicpilot-scraper:${VERSION}"
+        PUSH_FLAG=""
+      else
+        IMAGE_REPO="docker.io/${DOCKER_HUB_NAMESPACE}/${CNB_REPO_NAME_LOWERCASE}"
+        TAGS="-t ${IMAGE_REPO}:${VERSION} -t ${IMAGE_REPO}:sha-${CNB_COMMIT_SHORT}"
+        # v1.2.3 这种正式版本同时覆盖 latest，pull latest 始终是最新正式版
+        if printf '%s' "${VERSION}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+          TAGS="${TAGS} -t ${IMAGE_REPO}:latest"
+        fi
+        PUSH_FLAG="--push"
+      fi
+
+      echo "推送标签: ${TAGS}"
+      docker buildx build \
+        --platform "${PLATFORMS}" \
+        --build-arg PYTHON_VERSION=3.12 \
+        --label org.opencontainers.image.source="${CNB_WEB_ENDPOINT}/${CNB_REPO_SLUG}" \
+        --label org.opencontainers.image.revision="${CNB_COMMIT}" \
+        --label org.opencontainers.image.version="${VERSION}" \
+        ${TAGS} \
+        ${PUSH_FLAG} .
+
+main:
+  push:
+    - name: docker-hub-latest
+      <<: *docker-hub-image
+      imports:
+        # 文件不存在时整段流水线跳过，不比其它流水线先失败
+        - path: https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/docker-hub.yml
+          ignoreError: true
+      stages: *docker-hub-stages
+
+$:
+  tag_push:
+    - name: docker-hub-tag
+      <<: *docker-hub-image
+      imports:
+        - path: https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/docker-hub.yml
+          ignoreError: true
+      stages: *docker-hub-stages
