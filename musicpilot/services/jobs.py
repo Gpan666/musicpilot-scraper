@@ -92,7 +92,7 @@ class JobManager:
             if job is None:
                 return
             done = max(0, processed - failed - skipped)
-            title = job.title or self._title_for(job_id, current)
+            title = job.title or self._title_for(job_id, current, processed)
             updated = replace(
                 job,
                 processed=processed,
@@ -117,17 +117,22 @@ class JobManager:
 
         return update
 
-    def _title_for(self, job_id: str, current: str) -> str:
-        """A human-readable label: the only file name, or the current one."""
-        if current:
-            return Path(current).name
+    def _title_for(self, job_id: str, current: str, processed: int = 0) -> str:
+        """A human-readable label: the single file name, or a plain count.
+
+        一次处理多个文件时只写「几个文件」，不写某个文件名——标题写死成第一个
+        文件名，任务记录里就会冒出一堆「同一个文件名」的条目，和小标题重复又误导。
+        """
         raw = (self.store.get_job(job_id) or {}).get("options") or "{}"
         try:
-            requested = json.loads(raw).get("paths") or []
+            requested = [value for value in (json.loads(raw).get("paths") or []) if value]
         except (TypeError, ValueError, AttributeError):
+            requested = []
+        if len(requested) == 1:
+            return Path(requested[0]).name
+        if len(requested) > 1 or (not current and processed > 1):
             return ""
-        names = [Path(value).name for value in requested if value]
-        return names[0] if len(names) == 1 else ""
+        return Path(current).name if current else ""
 
     async def _run(
         self,
@@ -201,12 +206,15 @@ class JobManager:
         return self.store.list_items(job_id, limit=limit, offset=offset)
 
     def label(self, job_id: str) -> str:
-        """A display name for a job: its title, else the file count it handled."""
+        """A display name for a job: the single file name, else "几个文件"."""
         job = self.get(job_id) or {}
-        title = str(job.get("title") or "").strip() or str(job.get("current_file") or "").strip()
+        title = str(job.get("title") or "").strip()
         if title:
             return Path(title).name
         processed = int(job.get("processed") or 0)
+        current = str(job.get("current_file") or "").strip()
+        if processed <= 1 and current:
+            return Path(current).name
         kind = str(job.get("kind") or "")
         prefix = "自动刮削" if kind == JobKind.AUTO.value else "刮削"
         return f"{prefix} · {processed} 个文件" if processed else prefix

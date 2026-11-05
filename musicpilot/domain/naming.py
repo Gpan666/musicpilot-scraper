@@ -90,7 +90,7 @@ def validate_template(template: str) -> None:
         raise ValueError(f"模板语法错误：{exc}") from exc
 
 
-def sanitize_component(value: str, unknown: str = "Unknown") -> str:
+def sanitize_component(value: str, unknown: str = "未知") -> str:
     cleaned = _ILLEGAL_CHARS.sub("_", str(value or ""))
     cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(".")
     cleaned = cleaned.strip()
@@ -124,7 +124,7 @@ def render_relative(
     *,
     extension: str,
     source_filename: str = "",
-    unknown: str = "Unknown",
+    unknown: str = "未知",
 ) -> Path:
     """Render a template into a *relative* path (extension appended automatically)."""
     validate_template(template)
@@ -154,7 +154,7 @@ def target_path(
     *,
     extension: str,
     source_filename: str = "",
-    unknown: str = "Unknown",
+    unknown: str = "未知",
 ) -> Path:
     """Render and verify that the destination stays inside ``library_root``."""
     relative = render_relative(
@@ -171,7 +171,7 @@ def target_path(
     return destination
 
 
-def example_target(template: str, unknown: str = "Unknown") -> str:
+def example_target(template: str, unknown: str = "未知") -> str:
     meta = TrackMetadata(
         title="Bohemian Rhapsody",
         artist="Queen",
