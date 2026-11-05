@@ -744,6 +744,50 @@ td.th-key { color: var(--text-2); width: 130px; }
   to { opacity: 1; transform: none; }
 }
 
+/* ---------- 任务明细抽屉：从右侧滑出 ---------- */
+.drawer-mask {
+  position: fixed; inset: 0;
+  z-index: 55;
+  display: flex; justify-content: flex-end;
+  background: var(--dimming);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.drawer {
+  width: min(1080px, 92vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--outline);
+  box-shadow: var(--shadow);
+  animation: slide-in 240ms cubic-bezier(.2, .8, .2, 1) both;
+}
+.drawer-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--divider);
+}
+.drawer-head h2 { font-size: var(--fs-title); }
+.drawer-sub { margin-top: 4px; font-size: var(--fs-small); color: var(--text-2); }
+.drawer-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
+.drawer-body .table-wrap { overflow: visible; }
+.drawer-body .items-table { min-width: 0; }
+.drawer-body .items-table .path-cell { min-width: 150px; max-width: 260px; }
+.drawer-body .detail-cell { max-width: 240px; }
+.drawer-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 22px;
+  border-top: 1px solid var(--divider);
+  font-size: var(--fs-small); color: var(--text-3);
+}
+.danger-text { color: var(--danger) !important; }
+.ghost-btn:disabled { opacity: .45; cursor: not-allowed; }
+@keyframes slide-in {
+  from { transform: translateX(28px); opacity: .4; }
+  to { transform: none; opacity: 1; }
+}
+
 /* ---------- responsive ---------- */
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
@@ -772,6 +816,8 @@ td.th-key { color: var(--text-2); width: 130px; }
   .dialog-actions { flex-direction: column-reverse; }
   .dialog-actions button { width: 100%; }
   .picker-list { max-height: 38vh; }
+  .drawer { width: 100%; }
+  .drawer-body { padding: 10px 12px 14px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

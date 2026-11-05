@@ -219,6 +219,22 @@ class JobManager:
         prefix = "自动刮削" if kind == JobKind.AUTO.value else "刮削"
         return f"{prefix} · {processed} 个文件" if processed else prefix
 
+    def delete(self, job_id: str) -> bool:
+        """删除一条已结束的任务记录；正在跑的任务要先取消。"""
+        if job_id in self._tasks or job_id == self._active_id:
+            raise JobConflict("任务正在运行，请先取消再删除")
+        removed = self.store.delete_job(job_id)
+        self._jobs.pop(job_id, None)
+        return removed
+
+    def clear(self) -> int:
+        """清空任务记录，正在跑的那条保留。"""
+        removed = self.store.delete_finished_jobs(keep_active=True)
+        for job_id in list(self._jobs):
+            if job_id not in self._tasks and job_id != self._active_id:
+                self._jobs.pop(job_id, None)
+        return removed
+
     def cancel(self, job_id: str) -> bool:
         event = self._events.get(job_id)
         if event is None:
