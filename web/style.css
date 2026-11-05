@@ -1123,8 +1123,17 @@ td.th-key { color: var(--text-2); width: 130px; }
  */
 
 /* 统计卡：图标 + 大数字 + 标签 + 底部进度条，与概览的 stat 磁贴同一套骨架 */
+/* 五张卡（总曲目 / 有封面 / 有歌词 / 待补全 / 完整率）：宽屏一排五张，窄屏按 .bento 的断点降级 */
 .lib-stats { margin-bottom: var(--gap); }
+.lib-stats.cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1180px) { .lib-stats.cols-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .lib-stats.cols-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) { .lib-stats.cols-5 { grid-template-columns: minmax(0, 1fr); } }
 .lib-stat { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+/* 「待补全」卡可点：直接切到待补全筛选 */
+.lib-stat-link { cursor: pointer; text-align: left; }
+.lib-stat-link:hover { border-color: var(--warn); }
+.lib-stat-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .lib-stat-head { display: flex; align-items: center; gap: 8px; color: var(--text-3); }
 .lib-stat-icon {
   width: 26px; height: 26px; flex: none;
