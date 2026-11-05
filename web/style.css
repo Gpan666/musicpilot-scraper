@@ -1250,39 +1250,74 @@ td.th-key { color: var(--text-2); width: 130px; }
 .lib-tab.active em { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary-soft-text); }
 .lib-body { min-height: 120px; }
 
-/* 表格：曲目列吃剩余宽度，其余列按内容撑开；行高压到 8px 上下，一屏能排 15 行以上 */
-.lib-table-wrap { overflow-x: auto; }
-.lib-table { min-width: 940px; font-size: var(--fs-small); }
+/* 表格：曲目列限死在 280–340px（原先按 32% 吃剩余宽度，宽屏能长到 700px+，
+ * 把歌词 / 状态 / 操作三列挤出屏幕）。所有列都带宽度，宽屏不再有贪婪列。 */
+.lib-table-wrap {
+  /* 表头要跟着滚动条走，就得给滚动容器一个高度上限（固定表头 scrollport）；
+   * 一屏放得下时取内容高度，超出才在容器内滚动。 */
+  max-height: calc(100vh - 160px);
+  /* 纵向 scroll 让表头吸顶；横向用 clip：百分比列取整会攒出 1px 溢出，
+   * 与其为它长出一条横向滚动条，不如裁掉——1440–1600 本来就不该滚 */
+  overflow: auto;
+  overflow-x: clip;
+  overscroll-behavior-x: contain;
+}
+.lib-table {
+  min-width: 940px;
+  font-size: var(--fs-small);
+  /* 定宽布局 + 每列都给了宽度：百分比按表格宽度分摊，标题只会截断，不会把列撑宽 */
+  table-layout: fixed;
+}
 .lib-table th { padding: 8px 10px; }
 .lib-table td { padding: 7px 10px; }
 .lib-table tbody tr { cursor: pointer; }
 .lib-table tbody tr:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 .lib-table tbody tr.gap td:first-child { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warn) 70%, transparent); }
-.lib-table .lib-col-track { width: 32%; min-width: 240px; }
-.lib-table .lib-col-album { width: 15%; max-width: 190px; }
-.lib-table .lib-col-artist { width: 12%; max-width: 160px; }
-.lib-table .lib-col-genre { width: 10%; max-width: 130px; }
+/* 列宽：曲目 26%（上下限卡死 280–340），专辑/歌手/流派共 31%，
+ * 格式/完整度/歌词/状态/操作共 43%——合计 100%，宽屏不会被某一列吞掉剩余宽度。 */
+.lib-table .lib-col-track { width: 26%; min-width: 280px; max-width: 340px; }
+.lib-table .lib-col-album { width: 12%; }
+.lib-table .lib-col-artist { width: 10%; }
+.lib-table .lib-col-genre { width: 9%; }
+.lib-table .lib-col-format { width: 7.5%; }
+.lib-table .lib-col-complete { width: 7.5%; }
+.lib-table .lib-col-lyrics { width: 7%; }
+.lib-table .lib-col-state { width: 8%; }
+.lib-table .lib-col-actions { width: 10%; text-align: right; }
 .lib-table .lib-col-format,
 .lib-table .lib-col-complete,
 .lib-table .lib-col-lyrics,
-.lib-table .lib-col-state { width: 1%; white-space: nowrap; }
-.lib-table .lib-col-actions { width: 1%; white-space: nowrap; text-align: right; }
-/* 专辑 / 歌手 / 流派：单行截断，悬停看全称，避免长名字把表格撑爆 */
-.lib-table .lib-col-album, .lib-table .lib-col-artist, .lib-table .lib-col-genre {
+.lib-table .lib-col-state,
+.lib-table .lib-col-actions { white-space: nowrap; }
+
+/* 表头吸顶：在滚动容器内部贴顶；底色用不透明的 surface，滚过去的行不会透出来 */
+.lib-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--divider);
+}
+
+/* 专辑 / 歌手 / 流派：单行截断，悬停看全称；曲目列整格裁掉溢出，封面不参与压缩 */
+.lib-table .lib-col-track,
+.lib-table .lib-col-album,
+.lib-table .lib-col-artist,
+.lib-table .lib-col-genre {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lib-table .lib-col-actions .icon-btn { width: 28px; height: 28px; font-size: var(--fs-small); }
 .lib-table .lib-col-actions .icon-btn.active { background: var(--primary-soft); color: var(--primary-soft-text); }
 .lib-table .lib-col-actions .danger-text { color: var(--danger); }
 .lib-track-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.lib-track-text { min-width: 0; }
+.lib-track-text { flex: 1 1 auto; min-width: 0; }
 .lib-track-title {
   font-weight: var(--wght-heading);
   font-variation-settings: 'wght' var(--wght-heading);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: help;
 }
 .lib-track-sub {
   font-size: var(--fs-footnote); color: var(--text-3);
+  cursor: help;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lib-thumb {
@@ -1343,6 +1378,8 @@ td.th-key { color: var(--text-2); width: 130px; }
 .lib-pager-main:empty { display: none; }
 .lib-pager-main { margin-top: 12px; }
 .lib-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* 分页是横向工具条：按钮自带的外边距会让行高多出几像素，表头吸顶的容器因此多一条竖向滚动 */
+.lib-pager .ghost-btn.small { margin: 0; }
 .lib-pager.compact { gap: 4px; }
 .lib-pager.compact .ghost-btn.small { padding: 4px 9px; font-size: var(--fs-tiny); }
 .lib-pager .ghost-btn.small:disabled { opacity: .45; }
