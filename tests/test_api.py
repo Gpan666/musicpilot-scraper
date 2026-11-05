@@ -208,7 +208,7 @@ def test_cover_proxy_rejects_unknown_hosts(
 
 
 def test_store_migrates_old_job_items(tmp_path: Any) -> None:
-    """A database written by v2.0.0 keeps working after the new columns."""
+    """旧版本（1.0 之前）写下的数据库，加上新列之后照样能读。"""
     import sqlite3
 
     from musicpilot.adapters.store import Store
@@ -348,3 +348,51 @@ def test_frontend_assets_are_locatable(workspace: dict[str, Any]) -> None:
             assert settings.web_dir == candidate
         else:
             assert (settings.web_dir / "index.html").is_file()
+
+
+def test_items_expose_lyrics_before_and_after(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """对比卡片要能比歌词：文件里有没有、刮削后写入多少，都得给到前端。"""
+    audio = make_audio(workspace["source"] / "01 - Queen - Bohemian Rhapsody.flac")
+    job = wait_for_job(
+        client,
+        client.post("/api/jobs", json={"kind": "preview", "paths": [str(audio)]}).json()["id"],
+    )
+    item = client.get(f"/api/jobs/{job['id']}/items").json()["items"][0]
+    for key in ("local_lyrics", "has_local_lyrics", "has_lyrics"):
+        assert key in item, key
+    assert item["has_local_lyrics"] is False
+    assert item["has_lyrics"] is False
+
+
+def test_single_track_name_has_no_track_number(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """单曲（同级没有别的音轨）文件名不带轨号，轨号仍留在标签里。"""
+    audio = make_audio(workspace["source"] / "01 - Enya - Only Time.flac")
+    client.put("/api/settings", json={"values": {"transfer_mode": "copy"}})
+    payload = client.post(
+        "/api/jobs",
+        json={
+            "kind": "scrape",
+            "dry_run": False,
+            "paths": [str(audio)],
+            "choices": {
+                str(audio): {
+                    "title": "Only Time",
+                    "artist": "Enya",
+                    "album": "A Day Without Rain",
+                    "year": 2000,
+                    "track_number": 1,
+                    "source": "manual",
+                }
+            },
+        },
+    )
+    job = wait_for_job(client, payload.json()["id"])
+    item = client.get(f"/api/jobs/{job['id']}/items").json()["items"][0]
+    name = Path(item["target"]).name
+    assert name == "Only Time.flac", name
+    # 轨号没有被丢掉，只是不进歌名
+    assert item["track_number"] == 1

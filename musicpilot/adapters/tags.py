@@ -17,6 +17,7 @@ from mutagen import File as MutagenFile
 from musicpilot.domain.models import TrackMetadata
 
 _MAX_COVER_BYTES = 10 * 1024 * 1024
+_MAX_TRACK_NUMBER = 99
 
 
 def _close(audio: Any) -> None:
@@ -35,7 +36,12 @@ def _set(audio: Any, key: str, value: str | int | None) -> bool:
         return False
 
 
-def _write_basic_sync(path: Path, meta: TrackMetadata, lyrics_enabled: bool) -> list[str]:
+def _write_basic_sync(
+    path: Path,
+    meta: TrackMetadata,
+    lyrics_enabled: bool,
+    track_number: int | None = None,
+) -> list[str]:
     try:
         audio = MutagenFile(str(path), easy=True)
     except Exception:  # noqa: BLE001
@@ -55,7 +61,7 @@ def _write_basic_sync(path: Path, meta: TrackMetadata, lyrics_enabled: bool) -> 
             ("album", meta.album),
             ("albumartist", meta.album_artist or meta.artist),
             ("date", meta.year),
-            ("tracknumber", meta.track_number),
+            ("tracknumber", track_number if track_number is not None else meta.track_number),
             ("discnumber", meta.disc_number),
         )
         for key, value in fields:
@@ -135,8 +141,9 @@ def write_tags_sync(
     *,
     cover: tuple[bytes, str] | None = None,
     lyrics_enabled: bool = False,
+    track_number: int | None = None,
 ) -> list[str]:
-    written = _write_basic_sync(path, meta, lyrics_enabled)
+    written = _write_basic_sync(path, meta, lyrics_enabled, track_number)
     if _write_cover_sync(path, cover):
         written.append("cover")
     return written
@@ -176,6 +183,7 @@ async def apply_tags(
     *,
     cover: tuple[bytes, str] | None = None,
     lyrics_enabled: bool = False,
+    track_number: int | None = None,
 ) -> list[str]:
     return await asyncio.to_thread(
         write_tags_sync,
@@ -183,4 +191,5 @@ async def apply_tags(
         meta,
         cover=cover,
         lyrics_enabled=lyrics_enabled,
+        track_number=track_number,
     )

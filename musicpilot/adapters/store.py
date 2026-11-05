@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS job_items (
     local_album_artist TEXT,
     local_year INTEGER,
     local_track_number INTEGER,
+    local_lyrics TEXT,
+    has_local_lyrics INTEGER NOT NULL DEFAULT 0,
+    has_lyrics INTEGER NOT NULL DEFAULT 0,
     cover_url TEXT,
     candidates TEXT NOT NULL DEFAULT '[]',
     created_at REAL NOT NULL
@@ -131,6 +134,9 @@ class Store:
                 "local_album_artist": "TEXT",
                 "local_year": "INTEGER",
                 "local_track_number": "INTEGER",
+                "local_lyrics": "TEXT",
+                "has_local_lyrics": "INTEGER NOT NULL DEFAULT 0",
+                "has_lyrics": "INTEGER NOT NULL DEFAULT 0",
                 "cover_url": "TEXT",
                 "candidates": "TEXT NOT NULL DEFAULT '[]'",
                 "album_artist": "TEXT",
@@ -267,6 +273,9 @@ class Store:
                     item.local_album_artist,
                     item.local_year,
                     item.local_track_number,
+                    item.local_lyrics,
+                    int(bool(item.has_local_lyrics)),
+                    int(bool(item.has_lyrics)),
                     item.cover_url,
                     json.dumps(item.candidates, ensure_ascii=False),
                     now,
@@ -281,9 +290,9 @@ class Store:
                     job_id, source, target, mode, status, confidence, source_name,
                     title, artist, album, album_artist, year, track_number, detail,
                     link_target, local_title, local_artist, local_album,
-                    local_album_artist, local_year, local_track_number, cover_url,
-                    candidates, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    local_album_artist, local_year, local_track_number, local_lyrics,
+                    has_local_lyrics, has_lyrics, cover_url, candidates, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -303,6 +312,9 @@ class Store:
             row["candidates"] = json.loads(raw) if isinstance(raw, str) else (raw or [])
         except json.JSONDecodeError:
             row["candidates"] = []
+        # SQLite 里是 0/1，前端只关心真假
+        for flag in ("has_local_lyrics", "has_lyrics"):
+            row[flag] = bool(row.get(flag))
         return row
 
     def item_counts(self, job_id: str) -> dict[str, int]:

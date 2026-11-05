@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -18,6 +19,16 @@ from musicpilot.domain.naming import target_path
 from musicpilot.domain.transfer import TransferMode, transfer
 
 ProgressCallback = Callable[[int, int, int, str, str], None]
+
+# 文件名里不塞轨号的模板变量：轨号只进标签，歌名保持干净。
+_TRACK_FIELDS = ("track", "disc")
+
+# 单曲去掉轨号后若模板被削空，退化成「歌手 - 歌名」，与「歌手 / 单曲」预设一致
+_SINGLE_FALLBACK_TEMPLATE = "{artist} - {title}"
+
+_AUDIO_SUFFIXES = frozenset(
+    {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif", ".dsf", ".dff", ".wma", ".ape"}
+)
 
 # Human choices made on the preview page: {source path: metadata overrides}.
 ChoiceMap = dict[str, dict[str, Any]]
@@ -47,6 +58,42 @@ def _picked_metadata(choice: dict[str, Any]) -> TrackMetadata:
     values["album_artist"] = album_artist or values.get("artist")
     values["cover_url"] = str(choice.get("cover_url") or "") or None
     return TrackMetadata(**values)
+
+
+def _drop_track_fields(template: str) -> str:
+    """把模板里的 ``{track}`` / ``{disc}`` 去掉，再收拾残留的分隔符。
+
+    ``{album}/{album_artist}/{track:02d} - {title}`` → ``{album}/{album_artist}/{title}``；
+    ``{artist} - {title}`` 这种不含轨号的模板原样返回。
+    """
+    if not any("{" + name in template for name in _TRACK_FIELDS):
+        return template
+    cleaned = template
+    for name in _TRACK_FIELDS:
+        cleaned = re.sub(r"\{" + name + r"(:[^}]*)?\}", "", cleaned)
+    segments = []
+    for segment in cleaned.split("/"):
+        segment = re.sub(r"^[\s\-_.]+", "", segment)
+        segment = re.sub(r"[\s\-_.]+$", "", segment)
+        segment = re.sub(r"\s{2,}", " ", segment)
+        if segment:
+            segments.append(segment)
+    return "/".join(segments) or _SINGLE_FALLBACK_TEMPLATE
+
+
+def _album_siblings(path: Path, root: Path) -> bool:
+    """同级目录里还有别的音频文件，就认为它在专辑里。"""
+    try:
+        parent = path.parent.resolve()
+        if parent == Path(root).resolve():
+            return False
+        for sibling in parent.iterdir():
+            if sibling.is_file() and sibling.suffix.lower() in _AUDIO_SUFFIXES:
+                if sibling.resolve() != path.resolve():
+                    return True
+        return False
+    except OSError:
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,11 +269,23 @@ class ScraperService:
                 source=meta.source,
             )
         local = audio.local_metadata
+        # 单曲（同级没有别的音轨、也不知道自己在专辑里第几首）不该带轨号，
+        # 否则每首歌的文件名都是「00 - 歌名」。专辑照旧按轨号排。
+        in_album = await asyncio.to_thread(_album_siblings, Path(audio.path), runtime.source_root)
+        track_number = meta.track_number if in_album and meta.track_number else None
+        name_meta = replace(
+            meta,
+            track_number=track_number,
+            disc_number=meta.disc_number if track_number else None,
+        )
+        template = runtime.naming_template
+        if not in_album:
+            template = _drop_track_fields(template)
         try:
             destination = target_path(
                 library_root,
-                runtime.naming_template,
-                meta,
+                template,
+                name_meta,
                 extension=audio.extension,
                 source_filename=audio.display_name,
                 unknown=runtime.unknown_placeholder,
@@ -263,6 +322,9 @@ class ScraperService:
             local_album_artist=local.album_artist or local.artist,
             local_year=local.year,
             local_track_number=local.track_number,
+            local_lyrics=local.lyrics,
+            has_local_lyrics=bool((local.lyrics or "").strip()),
+            has_lyrics=bool((meta.lyrics or "").strip()),
             cover_url=meta.cover_url,
             candidates=[item.as_dict() for item in resolution.candidates],
         )
@@ -288,12 +350,22 @@ class ScraperService:
             )
 
         written: list[str] = []
+        has_lyrics = False
         if runtime.write_tags and meta.title.strip():
             effective = meta
             if runtime.write_lyrics:
+                # 搜索接口不一定带歌词，各音源都有独立的歌词接口，这里补一次
                 lyrics = await self.metadata.lyrics_for(meta)
                 if lyrics:
                     effective = replace(effective, lyrics=lyrics)
+                if (effective.lyrics or "").strip():
+                    has_lyrics = True
+                elif meta.source not in {"", "local", "manual"}:
+                    # 只有查了在线音源才谈得上「没取到」，本地标签本来就带不出歌词
+                    resolution = replace(
+                        resolution,
+                        reason=f"{resolution.reason}（未取到歌词）",
+                    )
             cover = None
             if runtime.embed_cover and not audio.has_embedded_cover:
                 cover = await self.metadata.cover(meta.cover_url)
@@ -303,9 +375,11 @@ class ScraperService:
                     effective,
                     cover=cover,
                     lyrics_enabled=runtime.write_lyrics,
+                    track_number=track_number,
                 )
             except OSError as exc:
                 written = []
+                has_lyrics = False
                 resolution = replace(resolution, reason=f"写标签失败：{exc}")
 
         # 说明列只放一两句中文摘要，细节见日志与悬停提示。
@@ -318,6 +392,7 @@ class ScraperService:
                 replace(
                     base_item,
                     status=ItemStatus.DONE.value,
+                    has_lyrics=has_lyrics,
                     detail=f"{tag_note}未整理文件。{resolution.reason}",
                 ),
                 (1, 0, 0),
@@ -350,6 +425,7 @@ class ScraperService:
                 status=status.value,
                 detail=detail,
                 link_target=result.link_target,
+                has_lyrics=has_lyrics,
             ),
             counts,
         )

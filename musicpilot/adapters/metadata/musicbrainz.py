@@ -38,6 +38,14 @@ def _year(value: Any) -> int | None:
         return None
 
 
+def _track_number(value: Any) -> int | None:
+    text = str(value or "").strip()
+    try:
+        return int(text) if text.isdigit() else None
+    except ValueError:
+        return None
+
+
 class MusicBrainzProvider:
     name = "musicbrainz"
 
@@ -65,7 +73,7 @@ class MusicBrainzProvider:
                     "query": _query(title, artist, album),
                     "fmt": "json",
                     "limit": max(1, min(limit * 3, 25)),
-                    "inc": "artist-credits+releases",
+                    "inc": "artist-credits+releases+recording-level-rels",
                 },
             )
             response.raise_for_status()
@@ -90,6 +98,20 @@ class MusicBrainzProvider:
                     continue
                 album_name = release.get("title")
                 release_id = release.get("id")
+                # 专辑艺术家取自 release 的 artist-credit（合辑里和单曲歌手不同），
+                # 之前只用 recording 的歌手，导致 {album_artist} 永远回落成歌手。
+                album_artist = artist_name
+                release_credits = release.get("artist-credit") or []
+                if isinstance(release_credits, list) and release_credits:
+                    credit = release_credits[0]
+                    if isinstance(credit, dict) and credit.get("name"):
+                        album_artist = credit.get("name")
+                track_number = None
+                media = release.get("media") or []
+                if isinstance(media, list) and media and isinstance(media[0], dict):
+                    tracks = media[0].get("track") or []
+                    if isinstance(tracks, list) and tracks and isinstance(tracks[0], dict):
+                        track_number = tracks[0].get("number") or tracks[0].get("position")
                 key = (
                     track_title.casefold(),
                     str(artist_name or "").casefold(),
@@ -103,7 +125,9 @@ class MusicBrainzProvider:
                         title=track_title,
                         artist=str(artist_name) if artist_name else None,
                         album=str(album_name) if album_name else None,
+                        album_artist=str(album_artist) if album_artist else None,
                         year=_year(release.get("date")),
+                        track_number=_track_number(track_number),
                         cover_url=(
                             f"https://coverartarchive.org/release/{release_id}/front-250"
                             if release_id

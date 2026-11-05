@@ -83,7 +83,19 @@ const shortPath = (path, head = 18, tail = 34) => {
   return `${text.slice(0, head)}…${text.slice(-tail)}`;
 };
 const MODE_LABELS = { copy: '复制', move: '移动', hardlink: '硬链接', symlink: '软链接' };
-const SOURCE_LABELS = { musicbrainz: '音乐数据库 MusicBrainz', netease: '网易云音乐', local: '本地标签', manual: '手动填写' };
+const SOURCE_LABELS = {
+  musicbrainz: '音乐数据库 MusicBrainz', netease: '网易云音乐', qq: 'QQ音乐',
+  kugou: '酷狗音乐', kuwo: '酷我音乐', local: '本地标签', manual: '手动填写',
+};
+// 音源说明只在设置页用，顺序即界面顺序
+const SOURCE_OPTIONS = [
+  ['local', '本地标签与文件名（始终参与）'],
+  ['musicbrainz', '音乐数据库 MusicBrainz（国际曲库）'],
+  ['netease', '网易云音乐（中文曲库 / 歌词 / 封面）'],
+  ['qq', 'QQ音乐（中文曲库 / 歌词 / 封面 / 轨号）'],
+  ['kugou', '酷狗音乐（中文曲库 / 歌词）'],
+  ['kuwo', '酷我音乐（中文曲库 / 歌词）'],
+];
 const sourceLabel = (name) => SOURCE_LABELS[String(name || '').toLowerCase()] || String(name || '未知来源');
 const modeLabel = (mode) => MODE_LABELS[String(mode || '')] || '未知方式';
 const STATUS_LABELS = {
@@ -606,7 +618,7 @@ function planCard(item, index) {
       <div class="plan-source mono" title="${esc(item.source)}">${esc(shortPath(item.source))}</div>
       <div class="diff">
         ${field('title', '标题')}${field('artist', '歌手')}${field('album', '专辑')}
-        ${field('album_artist', '专辑歌手')}${field('year', '年份')}
+        ${field('album_artist', '专辑歌手')}${field('year', '年份')}${field('track_number', '轨号')}
       </div>
       <div class="plan-target mono" title="${esc(item.target)}">${esc(shortPath(item.target) || '—')}</div>
       <div class="plan-foot">
@@ -953,6 +965,15 @@ const DIFF_FIELDS = [
   ['title', '歌曲名'], ['year', '年份'], ['album', '专辑'],
   ['album_artist', '专辑艺术家'], ['artist', '歌手'],
 ];
+// 歌词太长，卡片里只比「有没有 / 多少行」，完整内容折叠在后面
+const lyricsState = (item, local) => {
+  const flag = local ? 'has_local_lyrics' : 'has_lyrics';
+  if (typeof item[flag] === 'boolean') return item[flag];
+  const text = local ? item.local_lyrics : item.lyrics;
+  return Boolean(text && String(text).trim());
+};
+const lyricsLines = (item) => (String(item.lyrics || '').trim()
+  ? String(item.lyrics).trim().split('\n').filter((line) => line.trim()).length : 0);
 const itemValue = (item, key) => {
   const raw = item[key];
   return raw === null || raw === undefined || String(raw).trim() === '' ? '' : String(raw);
@@ -962,8 +983,8 @@ const localValue = (item, key) => {
   return raw === null || raw === undefined || String(raw).trim() === '' ? '' : String(raw);
 };
 
-function diffCell(value) {
-  return value ? esc(value) : '<span class="diff-blank">文件里没有</span>';
+function diffCell(value, blank = '文件里没有') {
+  return value ? esc(value) : `<span class="diff-blank">${esc(blank)}</span>`;
 }
 
 function diffRow(item, key, label) {
@@ -981,12 +1002,34 @@ function diffRow(item, key, label) {
   </div>`;
 }
 
+function lyricsRow(item) {
+  const before = lyricsState(item, true);
+  const after = lyricsState(item, false);
+  const lines = lyricsLines(item);
+  const replaced = before && after;
+  const filled = !before && after;
+  const tone = replaced ? 'replaced' : filled ? 'filled' : before ? '' : 'missing';
+  const beforeText = before ? '文件里有歌词' : '文件里没有';
+  const afterText = after
+    ? `写入 ${lines || ''}${lines ? ' 行' : '歌词'}`.trim()
+    : '没有歌词';
+  const detail = after && item.lyrics
+    ? `<details class="song-lyrics"><summary>查看歌词</summary><pre>${esc(String(item.lyrics).slice(0, 4000))}</pre></details>`
+    : '';
+  return `<div class="song-diff-row">
+    <span class="diff-key">歌词</span>
+    <span class="side before${replaced ? ' replaced' : ''}${before ? '' : ' blank'}">${diffCell(beforeText, '文件里没有')}</span>
+    <span class="diff-arrow">→</span>
+    <span class="side after${tone === 'missing' ? ' blank' : ''}${filled ? ' filled' : ''}">${diffCell(afterText, '没有歌词')}</span>
+  </div>${detail}`;
+}
+
 function songCardHtml(item) {
   const changed = DIFF_FIELDS.filter(([key]) => {
     const before = localValue(item, key);
     const after = itemValue(item, key);
     return before !== after;
-  }).length;
+  }).length + (lyricsState(item, true) !== lyricsState(item, false) ? 1 : 0);
   const cover = item.cover_url
     ? `<img src="/api/cover?url=${encodeURIComponent(item.cover_url)}" alt="" loading="lazy" data-song-cover>`
     : `<img src="/api/cover?path=${encodeURIComponent(item.source)}" alt="" loading="lazy" data-song-cover>`;
@@ -1008,6 +1051,7 @@ function songCardHtml(item) {
     <div class="song-diff">
       <div class="song-diff-head"><span>字段</span><span>刮削前（文件原标签）</span><span></span><span>刮削后（写入库）</span></div>
       ${DIFF_FIELDS.map(([key, label]) => diffRow(item, key, label)).join('')}
+      ${lyricsRow(item)}
     </div>
     <div class="song-files">
       <div><span class="field-label">源文件</span>
@@ -1093,9 +1137,9 @@ function renderSettings() {
   const presets = (meta.templates || []).map((preset) => (
     `<option value="${esc(preset.template)}">${esc(preset.name)}</option>`
   )).join('');
-  const sourceChecks = ['local', 'musicbrainz', 'netease'].map((name) => `
+  const sourceChecks = SOURCE_OPTIONS.map(([name, label]) => `
     <label class="check-line"><input type="checkbox" data-source="${name}" ${(s.metadata_sources || []).includes(name) ? 'checked' : ''}>
-      ${({ local: '本地标签与文件名（始终参与）', musicbrainz: '音乐数据库 MusicBrainz（国际曲库）', netease: '网易云音乐（中文曲库 / 歌词 / 封面）' })[name]}</label>`).join('');
+      ${esc(label)}</label>`).join('');
   const accountCard = state.auth.is_admin ? `
     <div class="panel">
       <div class="panel-head"><div><h2>账户</h2>
@@ -1167,7 +1211,7 @@ function renderSettings() {
       <div class="panel"><h2>标签与元数据</h2>
         <label class="check-line"><input type="checkbox" id="f-write-tags" ${s.write_tags ? 'checked' : ''}>写入音频标签</label>
         <label class="check-line"><input type="checkbox" id="f-cover" ${s.embed_cover ? 'checked' : ''}>下载并内嵌封面</label>
-        <label class="check-line"><input type="checkbox" id="f-lyrics" ${s.write_lyrics ? 'checked' : ''}>写入歌词（网易云）</label>
+        <label class="check-line"><input type="checkbox" id="f-lyrics" ${s.write_lyrics ? 'checked' : ''}>写入歌词（网易云 / QQ音乐 / 酷狗 / 酷我）</label>
         <label class="check-line"><input type="checkbox" id="f-relative" ${s.symlink_relative ? 'checked' : ''}>软链接使用相对路径（推荐）</label>
         <div class="divider"></div><div class="small muted" style="margin-bottom:8px">在线元数据源</div>${sourceChecks}
       </div>

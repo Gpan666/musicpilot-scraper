@@ -47,8 +47,10 @@ class TrackMetadata:
     external_id: str = ""
 
     def missing_fields(self) -> tuple[str, ...]:
+        # 专辑艺术家也算「该有」的字段：默认模板按 {album_artist} 建目录，
+        # 缺了它就得回落到歌手，专辑合辑会被拆散。
         missing = []
-        for name in ("title", "artist", "album", "year", "track_number"):
+        for name in ("title", "artist", "album", "album_artist", "year", "track_number"):
             if not getattr(self, name):
                 missing.append(name)
         return tuple(missing)
@@ -118,6 +120,9 @@ class PlanItem:
     local_album_artist: str | None = None
     local_year: int | None = None
     local_track_number: int | None = None
+    local_lyrics: str | None = None
+    has_local_lyrics: bool = False
+    has_lyrics: bool = False
     cover_url: str | None = None
     candidates: list[dict[str, Any]] = field(default_factory=list)
 
