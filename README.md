@@ -62,7 +62,8 @@ docker compose up -d --build
 
 ### 4.1 用现成的通用镜像
 
-不想自己构建就用发布好的多架构镜像（amd64 / arm64 / armv7），一份镜像跑遍 NAS 与服务器：
+不想自己构建就用发布好的多架构镜像（amd64 / arm64 / armv7），一份镜像跑遍 NAS 与服务器。
+CNB 制品库与 Docker Hub 同步发布，按网络可达性挑一个：
 
 ```bash
 docker run -d --name musicpilot \
@@ -71,12 +72,12 @@ docker run -d --name musicpilot \
   -v /volume1/media:/media \
   -v /volume1/docker/musicpilot:/data \
   --restart unless-stopped \
-  docker.cnb.cool/tsbyj.666/musicpilot-scraper:latest
+  docker.cnb.cool/tsbyj.666/musicpilot-scraper:latest   # 或 tsbyj/musicpilot-scraper:latest
 ```
 
 - `PUID` / `PGID` / `UMASK`：容器内进程的运行身份与文件权限，挂载目录写不进去时改成宿主属主（`id 用户名` 可查）。
 - 容器内只有两个约定：数据落 `/data`，媒体在 `/media`（源 `/media/downloads`、库 `/media/music`）。
-- 镜像由 `.cnb/docker.yml`（CNB 制品库，经 `.cnb.yml` include 生效）与 `.github/workflows/docker.yml`（GHCR）多架构构建；构建细节、发布链路与权限排查见 [docs/docker.md](docs/docker.md)。
+- 镜像由 `.cnb/docker.yml`（CNB 制品库）、`.cnb/docker-hub.yml`（Docker Hub）、`.github/workflows/docker.yml`（GHCR）三处多架构构建，均经 `.cnb.yml` include 生效；构建细节、发布链路与权限排查见 [docs/docker.md](docs/docker.md)。
 
 常用环境变量：`PUID`/`PGID`/`UMASK`（容器运行身份）、`MP_HOST_MEDIA_PATH`（媒体父目录）、`MP_TRANSFER_MODE`（copy/move/hardlink/symlink，默认 copy）、`MP_CONFIDENCE_THRESHOLD`（默认 0.62）、`MP_BROWSABLE_ROOTS`（目录选择器根，默认 `/media`）、`MP_WATCH_ENABLED`（自动刮削，默认 false）。完整见 `.env.example`。
 
