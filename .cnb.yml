@@ -1,0 +1,38 @@
+main:
+  pull_request.merged:
+    - imports: https://cnb.cool/TSBYJ/tsbyj.666/github-sync-secrets/-/blob/main/github-sync.yml
+      stages:
+        - name: create github repo if not exists
+          script: |
+            set -e
+            # 自动获取当前 CNB 仓库的名称
+            REPO_NAME="${CNB_REPO_NAME}"
+            echo "当前 CNB 仓库名为: ${REPO_NAME}"
+            
+            echo "正在检查 GitHub 仓库 ${GITHUB_USERNAME}/${REPO_NAME} 是否存在..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer ${GITHUB_ACCESS_TOKEN}" \
+              "https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}")
+            
+            if [ "$HTTP_CODE" = "404" ]; then
+              echo "仓库不存在，正在自动创建..."
+              curl -s -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GITHUB_ACCESS_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2026-03-10" \
+                https://api.github.com/user/repos \
+                -d "{\"name\":\"${REPO_NAME}\", \"private\": false}"
+              echo "仓库 ${REPO_NAME} 创建成功！"
+            else
+              echo "仓库已存在，跳过创建步骤。"
+            fi
+
+        - name: sync to github after PR merged
+          image: tencentcom/git-sync
+          settings:
+            target_url: https://github.com/${GITHUB_USERNAME}/${REPO_NAME}.git
+            auth_type: https
+            username: ${GITHUB_USERNAME}
+            password: ${GITHUB_ACCESS_TOKEN}
+            branch: main
+            force: true
