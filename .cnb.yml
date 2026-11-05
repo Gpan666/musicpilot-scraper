@@ -1,33 +1,39 @@
 main:
-  pull_request.merged:
+  push:
     - imports:
         - https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/github-sync.yml
       stages:
         - name: create github repo if not exists
           script: |
             set -e
-            # 自动获取当前 CNB 仓库的名称
             REPO_NAME="${CNB_REPO_NAME}"
-            echo "当前 CNB 仓库名为: ${REPO_NAME}"
-            
-            echo "正在检查 GitHub 仓库 ${GITHUB_USERNAME}/${REPO_NAME} 是否存在..."
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            API_VERSION="2022-11-28"
+
+            echo "目标仓库: ${GITHUB_USERNAME}/${REPO_NAME}"
+            RESP=$(curl -sS -w '\n%{http_code}' \
               -H "Authorization: Bearer ${GITHUB_ACCESS_TOKEN}" \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
               "https://api.github.com/repos/${GITHUB_USERNAME}/${REPO_NAME}")
-            
+            HTTP_CODE=$(echo "$RESP" | tail -n1)
+
             if [ "$HTTP_CODE" = "404" ]; then
-              echo "仓库不存在，正在自动创建..."
-              curl -s -X POST \
+              echo "GitHub 仓库不存在，开始创建..."
+              curl -sS -f -X POST \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer ${GITHUB_ACCESS_TOKEN}" \
-                -H "X-GitHub-Api-Version: 2026-03-10" \
+                -H "X-GitHub-Api-Version: ${API_VERSION}" \
                 https://api.github.com/user/repos \
-                -d "{\"name\":\"${REPO_NAME}\", \"private\": false}"
-              echo "仓库 ${REPO_NAME} 创建成功！"
+                -d "{\"name\":\"${REPO_NAME}\",\"private\":false}"
+              echo "仓库 ${REPO_NAME} 创建成功"
+            elif [ "$HTTP_CODE" = "200" ]; then
+              echo "GitHub 仓库已存在，跳过创建"
             else
-              echo "仓库已存在，跳过创建步骤。"
+              # 其它状态（401 令牌失效 / 403 权限不足 / 429 限流）直接失败，
+              # 避免把"查不到"误判成"不存在"从而漏建仓库，导致后续同步报 Repository not found
+              echo "查询 GitHub 仓库失败，HTTP ${HTTP_CODE}:" >&2
+              echo "$RESP" | head -n -1 >&2
+              exit 1
             fi
-
         - name: sync to github after PR merged
           image: tencentcom/git-sync
           settings:
@@ -35,5 +41,5 @@ main:
             auth_type: https
             username: ${GITHUB_USERNAME}
             password: ${GITHUB_ACCESS_TOKEN}
-            branch: main
+            branch: ${CNB_DEFAULT_BRANCH}
             force: true
