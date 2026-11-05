@@ -56,8 +56,11 @@ const state = {
   picker: { target: null, path: '', root: '', parent: null, entries: [], loading: false },
   plan: { jobId: null, items: [], choices: new Map(), filter: 'all' },
   library: {
-    loaded: false, tracks: [], stats: {}, sources: [], libraryDir: '', warnings: [],
-    loading: false, filter: 'all', query: '',
+    // 音乐库页的视图状态都在这里：筛选 / Tab / 分页 / 视图切换，刷新扫盘不会把它清掉。
+    loaded: false, loading: false, tracks: [], stats: {}, sources: [], libraryDir: '', warnings: [],
+    filter: 'all', lyricFilter: 'all', coverFilter: 'all', genre: '', query: '',
+    tab: 'tracks', view: localStorage.getItem('mp-lib-view') || 'table',
+    page: 1, pageSize: Number(localStorage.getItem('mp-lib-size')) || 50, openGroup: '',
     scrape: { path: null, source: '', results: [], loading: false, query: {} },
   },
   drawer: { jobId: null, items: [] },
@@ -288,7 +291,10 @@ function openModal(title, html) {
   $('modal-body').innerHTML = html;
   $('modal').classList.remove('hidden');
 }
-function closeModal() { $('modal').classList.add('hidden'); }
+function closeModal() {
+  $('modal').classList.add('hidden');
+  $('modal').classList.remove('wide-modal');  // 宽版只属于音乐库详情，别带给下一个弹窗
+}
 
 /* ---------------- directory picker ---------------- */
 function openPicker(targetId, title) {
@@ -474,11 +480,16 @@ async function renderDashboard() {
   });
 }
 
-/* ---------------- 音乐库：横向标签 / 卡片详情 / 手动刮削 / 查漏补缺 ---------------- */
+/* ---------------- 音乐库：统计卡 + 高密度表格 + 分组 Tab + 宽版详情 ---------------- */
 const LIBRARY_FILTERS = [
   ['all', '全部'], ['incomplete', '待补全'], ['complete', '已齐全'],
   ['lyrics', '有歌词'], ['no_lyrics', '无歌词'],
 ];
+/* Tab 与状态下拉共用同一份可见集合，筛选条件叠加而不是互相覆盖。 */
+const LIBRARY_TABS = [['tracks', '歌曲'], ['artists', '歌手'], ['genres', '流派'], ['albums', '专辑']];
+const LYRIC_FILTERS = [['all', '全部歌词'], ['yes', '有歌词'], ['no', '无歌词']];
+const COVER_FILTERS = [['all', '全部封面'], ['yes', '有封面'], ['no', '无封面']];
+const PAGE_SIZES = [20, 50, 100];
 const FIELD_NAMES = {
   title: '标题', artist: '歌手', album: '专辑', album_artist: '专辑艺术家',
   year: '年份', track_number: '专辑轨号', disc_number: '碟号', lyrics: '歌词', cover: '封面',
@@ -486,127 +497,509 @@ const FIELD_NAMES = {
 const fieldName = (name) => FIELD_NAMES[name] || name;
 /** 匹配度 1–10 的配色：7 分以上才算「像」。 */
 const scoreTone = (score) => (score >= 8 ? 'ok' : score >= 7 ? 'warn' : 'bad');
+/** 完整度配色沿用同一套语义色：≥85% 绿、70–85% 黄、其余红。 */
+const completenessTone = (ratio) => (ratio >= .85 ? 'ok' : ratio >= .7 ? 'warn' : 'bad');
+
+// 完整度百分比：缺几个字段就扣几分（九个字段均权），四舍五入到整数。
+const trackCompleteness = (track) => (track.complete ? 100 : Math.max(0, Math.round(100 - (100 * (track.missing || []).length) / 9)));
+const EXT_LABELS = { '.flac': 'FLAC', '.mp3': 'MP3', '.m4a': 'M4A', '.aac': 'AAC', '.ogg': 'OGG', '.wav': 'WAV', '.ape': 'APE', '.wma': 'WMA', '.mp4': 'MP4' };
+const trackFormat = (track) => (EXT_LABELS[String(track.extension || '').toLowerCase()]
+  || String(track.extension || '').replace(/^\./, '').toUpperCase() || '未知');
 
 function libraryTrackMatches(track) {
   const filter = state.library.filter;
-  if (filter === 'incomplete') return !track.complete;
-  if (filter === 'complete') return track.complete;
-  if (filter === 'lyrics') return track.has_lyrics;
-  if (filter === 'no_lyrics') return !track.has_lyrics;
+  if (filter === 'incomplete' && track.complete) return false;
+  if (filter === 'complete' && !track.complete) return false;
+  if (filter === 'lyrics' && !track.has_lyrics) return false;
+  if (filter === 'no_lyrics' && track.has_lyrics) return false;
+  // 两个下拉是「附加」条件：选「有封面」时「无歌词」这类主筛选照样生效
+  const lyric = state.library.lyricFilter;
+  if (lyric === 'yes' && !track.has_lyrics) return false;
+  if (lyric === 'no' && track.has_lyrics) return false;
+  const cover = state.library.coverFilter;
+  if (cover === 'yes' && !track.has_cover) return false;
+  if (cover === 'no' && track.has_cover) return false;
   return true;
 }
 function libraryVisible() {
   const needle = state.library.query.trim().toLowerCase();
+  const genre = state.library.genre;
   return (state.library.tracks || []).filter((track) => {
     if (!libraryTrackMatches(track)) return false;
+    if (genre && String(track.genre || '') !== genre) return false;
     if (!needle) return true;
-    return [track.title, track.artist, track.album, track.album_artist, track.name, track.relative_dir]
-      .filter(Boolean).some((value) => String(value).toLowerCase().includes(needle));
+    return trackSearchText(track).includes(needle);
+  });
+}
+/** 搜索字段与占位文案一致：标题 / 歌手 / 专辑 / 专辑艺术家 / 文件名 / 目录 / 流派。 */
+const trackSearchText = (track) => [track.title, track.artist, track.album, track.album_artist,
+  track.name, track.relative_dir, track.genre, track.year].filter(Boolean).join(' ').toLowerCase();
+
+function libraryGenres() {
+  const names = new Set();
+  (state.library.tracks || []).forEach((track) => {
+    if (track.genre) String(track.genre).split(/[;/、]/).forEach((part) => {
+      const name = part.trim();
+      if (name) names.add(name);
+    });
+  });
+  return [...names].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+}
+
+/* ---- 环形完整度 / 进度条 ---- */
+function ringHtml(percent, tone, size = 38) {
+  const stroke = size >= 60 ? 5 : 3.4;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const dash = (circumference * Math.max(0, Math.min(100, percent))) / 100;
+  return `<span class="lib-ring ${tone}" style="--ring-size:${size}px;--ring-stroke:${stroke}px">
+    <svg viewBox="0 0 ${size} ${size}" aria-hidden="true">
+      <circle class="ring-track" cx="${size / 2}" cy="${size / 2}" r="${radius}"></circle>
+      <circle class="ring-value" cx="${size / 2}" cy="${size / 2}" r="${radius}"
+        stroke-dasharray="${dash.toFixed(2)} ${circumference.toFixed(2)}"
+        transform="rotate(-90 ${size / 2} ${size / 2})"></circle>
+    </svg><b>${percent}%</b></span>`;
+}
+
+const COVER_FALLBACK = '<span class="lib-cover-fallback">♪</span>';
+function coverThumb(track, size = 40) {
+  const img = track.cover_url
+    ? `<img src="${esc(track.cover_url)}" alt="" loading="lazy" data-lib-cover>`
+    : COVER_FALLBACK;
+  return `<span class="lib-thumb" style="--thumb:${size}px">${img}</span>`;
+}
+function trackBadge(track) {
+  return track.complete
+    ? '<span class="badge ok">正常</span>'
+    : `<span class="badge warn" title="缺 ${esc((track.missing || []).map(fieldName).join('、') || '字段')}">待补全</span>`;
+}
+const dash = (value) => (value ? esc(value) : '<span class="lib-dash">—</span>');
+
+/* ---- 表格视图：九列，一屏塞得下 15 行以上 ---- */
+function libraryTable(tracks) {
+  const rows = tracks.map((track, index) => {
+    const percent = trackCompleteness(track);
+    const sub = [track.artist, track.album_artist && track.album_artist !== track.artist ? track.album_artist : '', track.year]
+      .filter(Boolean).join(' · ');
+    return `<tr class="lib-row-item${track.complete ? '' : ' gap'}" data-lib="${esc(track.path)}" tabindex="0">
+      <td class="lib-col-track"><div class="lib-track-cell">
+        ${coverThumb(track, 40)}
+        <div class="lib-track-text">
+          <div class="lib-track-title" title="${esc(track.title || track.name)}">${esc(track.title || track.name)}</div>
+          <div class="lib-track-sub">${sub ? esc(sub) : '<span class="lib-dash">歌手 / 年份待补全</span>'}</div>
+        </div></div></td>
+      <td class="lib-col-album" title="${esc(track.album || '')}">${dash(track.album)}</td>
+      <td class="lib-col-artist" title="${esc(track.artist || '')}">${dash(track.artist)}</td>
+      <td class="lib-col-genre" title="${esc(track.genre || '')}">${dash(track.genre)}</td>
+      <td class="lib-col-format"><span class="lib-tag mono">${esc(trackFormat(track))}</span></td>
+      <td class="lib-col-complete">${ringHtml(percent, completenessTone(percent / 100))}</td>
+      <td class="lib-col-lyrics">${track.has_lyrics
+        ? '<span class="lib-flag-icon ok" title="有歌词">✓</span>'
+        : '<span class="lib-flag-icon bad" title="无歌词">✕</span>'}</td>
+      <td class="lib-col-state">${trackBadge(track)}</td>
+      <td class="lib-col-actions"><div class="btn-row nowrap">
+        <button class="icon-btn small" data-lib-edit="${index}" title="编辑（查看详情）" aria-label="编辑">
+          ${spriteIcon('i-edit')}</button>
+        <button class="icon-btn small" data-lib-scrape="${index}" title="手动刮削" aria-label="手动刮削">
+          ${spriteIcon('i-scrape')}</button>
+        <button class="icon-btn small danger-text" data-lib-del="${index}" title="从音乐库移除文件" aria-label="删除">
+          ${spriteIcon('i-trash')}</button>
+      </div></td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap lib-table-wrap"><table class="lib-table">
+      <thead><tr>
+        <th class="lib-col-track">曲目</th><th class="lib-col-album">专辑</th><th class="lib-col-artist">歌手</th>
+        <th class="lib-col-genre">流派</th><th class="lib-col-format">格式</th><th class="lib-col-complete">完整度</th>
+        <th class="lib-col-lyrics">歌词</th><th class="lib-col-state">状态</th><th class="lib-col-actions">操作</th>
+      </tr></thead>
+      <tbody>${rows || `<tr><td colspan="9" class="empty">当前筛选条件下没有曲目</td></tr>`}</tbody></table></div>`;
+}
+
+/* ---- 网格视图：左封面右文字的横条小卡，比原来的竖排大卡片矮一半 ---- */
+function libraryCard(track, index) {
+  const percent = trackCompleteness(track);
+  return `<article class="lib-row${track.complete ? '' : ' gap'}" data-lib="${esc(track.path)}" tabindex="0"
+      title="${esc(track.path)}">
+    <div class="lib-row-top">
+      <div class="lib-row-cover">${coverThumb(track, 72)}</div>
+      <div class="lib-row-main">
+        <div class="lib-row-title">${esc(track.title || track.name)}</div>
+        <div class="lib-row-sub${track.artist || track.album ? '' : ' blank'}">${esc([track.artist, track.album].filter(Boolean).join(' · ') || '歌手 / 专辑待补全')}</div>
+      </div>
+      ${ringHtml(percent, completenessTone(percent / 100), 34)}
+    </div>
+    <div class="lib-row-foot">
+      ${trackBadge(track)}
+      <span class="lib-tag mono">${esc(trackFormat(track))}</span>
+      <span class="tiny">${track.has_lyrics ? '有歌词' : '无歌词'}</span>
+      <span class="lib-row-actions">
+        <button class="icon-btn small" data-lib-scrape="${index}" title="手动刮削" aria-label="手动刮削">${spriteIcon('i-scrape')}</button>
+      </span>
+    </div>
+  </article>`;
+}
+function libraryGrid(tracks) {
+  return `<div class="lib-tags">${tracks.map(libraryCard).join('')
+    || '<div class="empty">当前筛选条件下没有曲目</div>'}</div>`;
+}
+
+/* ---- 分组视图：歌手 / 流派 / 专辑按标签聚合，点开即可看组内曲目 ---- */
+function groupTracks(tracks, kind) {
+  const groups = new Map();
+  tracks.forEach((track) => {
+    let keys = [];
+    if (kind === 'artists') keys = [track.artist || '未知歌手'];
+    else if (kind === 'genres') keys = track.genre ? String(track.genre).split(/[;/、]/).map((x) => x.trim()).filter(Boolean) : ['未知流派'];
+    else keys = [track.album || '未知专辑'];
+    keys.forEach((name) => {
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(track);
+    });
+  });
+  return [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0], 'zh-CN'));
+}
+function libraryGroups(tracks) {
+  const kind = state.library.tab;
+  const store = state.library;
+  const open = store.openGroup;
+  const blocks = groupTracks(tracks, kind).map(([name, rows]) => {
+    const isOpen = open === `${kind}:${name}`;
+    const complete = rows.filter((row) => row.complete).length;
+    const percent = Math.round((100 * complete) / rows.length);
+    const items = isOpen ? rows.map((track, i) => `<button class="lib-group-item" data-lib="${esc(track.path)}">
+        ${coverThumb(track, 28)}
+        <span class="lib-group-item-title">${esc(track.title || track.name)}</span>
+        <span class="tiny">${esc(track.album || '—')}</span>
+      </button>`).join('') : '';
+    return `<div class="lib-group${isOpen ? ' open' : ''}">
+      <button class="lib-group-head" data-lib-group="${esc(`${kind}:${name}`)}">
+        <span class="lib-group-name">${esc(name)}</span>
+        <span class="badge">${rows.length} 首</span>
+        <span class="lib-group-bar"><span style="width:${percent}%"></span></span>
+        <span class="tiny">齐全 ${percent}%</span>
+      </button>
+      ${isOpen ? `<div class="lib-group-body">${items}</div>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="lib-groups">${blocks || '<div class="empty">当前筛选条件下没有分组</div>'}</div>`;
+}
+
+/* ---- 分页 ---- */
+function libraryPageCount(total) {
+  return Math.max(1, Math.ceil(total / state.library.pageSize));
+}
+function pagerHtml(total, compact = false) {
+  const store = state.library;
+  const pages = libraryPageCount(total);
+  const current = Math.min(store.page, pages);
+  const numbers = [];
+  const from = Math.max(1, Math.min(current - 2, pages - 4));
+  for (let i = from; i <= Math.min(pages, from + 4); i += 1) numbers.push(i);
+  const sizeSelect = `<select class="lib-page-size" data-lib-size>
+      ${PAGE_SIZES.map((size) => `<option value="${size}"${size === store.pageSize ? ' selected' : ''}>${size} / 页</option>`).join('')}
+    </select>`;
+  return `<div class="lib-pager${compact ? ' compact' : ''}">
+    <button class="ghost-btn small" data-lib-page="prev" ${current <= 1 ? 'disabled' : ''}>上一页</button>
+    ${numbers.map((n) => `<button class="ghost-btn small${n === current ? ' active' : ''}" data-lib-page="${n}">${n}</button>`).join('')}
+    <button class="ghost-btn small" data-lib-page="next" ${current >= pages ? 'disabled' : ''}>下一页</button>
+    ${compact ? sizeSelect : `<span class="small muted">共 ${total} 首 · 第 ${current} / ${pages} 页</span>${sizeSelect}`}
+  </div>`;
+}
+
+/* ---- 统计卡：图标 + 大数字 + 标签 + 进度条 ---- */
+function libraryStats() {
+  const store = state.library;
+  const tracks = store.tracks || [];
+  const stats = store.stats || {};
+  const total = stats.tracks || tracks.length || 0;
+  const covers = stats.with_cover ?? tracks.filter((t) => t.has_cover).length;
+  const lyrics = stats.with_lyrics ?? tracks.filter((t) => t.has_lyrics).length;
+  const complete = tracks.filter((t) => t.complete).length;
+  const pct = (value) => (total ? Math.round((100 * value) / total) : 0);
+  const completeRate = pct(complete);
+  const cards = [
+    ['i-files', '总曲目', total, total ? 100 : 0, '', `${stats.albums || 0} 张专辑 · ${stats.artists || 0} 位歌手`],
+    ['i-disc', '有封面', covers, pct(covers), '', `${total ? pct(covers) : 0}% 已内嵌封面`],
+    ['i-lyrics', '有歌词', lyrics, pct(lyrics), '', `${total ? pct(lyrics) : 0}% 有歌词`],
+    ['i-check', '完整率', `${completeRate}%`, completeRate, completenessTone(completeRate / 100),
+      `${complete} / ${total} 首字段齐全`],
+  ];
+  return `<div class="bento lib-stats">${cards.map(([icon, label, value, percent, tone, note]) => `
+    <div class="panel lib-stat">
+      <div class="lib-stat-head">
+        <span class="lib-stat-icon">${spriteIcon(icon)}</span>
+        <span class="lib-stat-label">${esc(label)}</span>
+      </div>
+      <div class="lib-stat-value${tone ? ` ${tone}` : ''}">${esc(String(value))}</div>
+      <div class="lib-stat-note">${esc(note)}</div>
+      <div class="progress lib-stat-bar"><span class="${tone}" style="width:${percent}%"></span></div>
+    </div>`).join('')}</div>`;
+}
+
+function libraryTabCounts(tracks) {
+  const counts = { tracks: tracks.length };
+  ['artists', 'genres', 'albums'].forEach((kind) => { counts[kind] = groupTracks(tracks, kind).length; });
+  return counts;
+}
+
+/** 只重画主内容区：改动筛选 / 翻页 / 切视图都不重新扫盘。 */
+function paintLibraryBody() {
+  const store = state.library;
+  localStorage.setItem('mp-lib-view', store.view);
+  const box = $('lib-body');
+  if (!box) return;
+  const visible = libraryVisible();
+  const counts = libraryTabCounts(visible);
+  document.querySelectorAll('[data-lib-tab]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.libTab === store.tab);
+    const tag = button.querySelector('em');
+    if (tag) tag.textContent = String(counts[button.dataset.libTab] || 0);
+  });
+  if (store.tab === 'tracks') {
+    const pages = libraryPageCount(visible.length);
+    if (store.page > pages) store.page = pages;
+    const start = (store.page - 1) * store.pageSize;
+    const slice = visible.slice(start, start + store.pageSize);
+    box.innerHTML = store.view === 'grid' ? libraryGrid(slice) : libraryTable(slice);
+    $('lib-pager-main').innerHTML = visible.length > store.pageSize || store.page > 1
+      ? pagerHtml(visible.length) : `<span class="small muted">共 ${visible.length} 首</span>`;
+  } else {
+    box.innerHTML = libraryGroups(visible);
+    $('lib-pager-main').innerHTML = '';
+  }
+  const counter = $('lib-count');
+  if (counter) {
+    counter.textContent = visible.length === store.tracks.length
+      ? `共 ${visible.length} 首`
+      : `筛选出 ${visible.length} / ${store.tracks.length} 首`;
+  }
+  const tool = $('lib-pager-top');
+  if (tool) tool.innerHTML = visible.length > store.pageSize && store.tab === 'tracks' ? pagerHtml(visible.length, true) : '';
+  bindPager();
+  bindLibraryBody(box, visible);
+  bindLibraryActions();
+}
+
+/* 表头工具条、Tab、筛选控件：每次重绘都重新挂 onclick / onchange，
+ * 不依赖容器事件委托，也不会因为节点重建而丢掉监听。 */
+function bindLibraryActions() {
+  const store = state.library;
+  document.querySelectorAll('[data-lib-view]').forEach((button) => {
+    button.onclick = () => {
+      store.view = button.dataset.libView;
+      paintLibraryBody();
+    };
+  });
+  document.querySelectorAll('[data-lib-tab]').forEach((button) => {
+    button.onclick = () => {
+      store.tab = button.dataset.libTab;
+      store.page = 1;
+      store.openGroup = '';
+      // 流派 tab 多一个流派下拉：切进来补上，切回去拿掉
+      if (store.tab === 'genres' && !$('lib-genre')) {
+        const holder = document.querySelector('.lib-selects');
+        if (holder) {
+          holder.insertAdjacentHTML('afterbegin', `<select id="lib-genre" class="lib-select">
+            <option value="">全部流派</option>
+            ${libraryGenres().map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}
+          </select>`);
+        }
+      } else if (store.tab !== 'genres' && $('lib-genre')) { $('lib-genre').remove(); }
+      paintLibraryBody();
+    };
+  });
+  // 分页、分组、行 / 卡片的点击归 bindPager 与 bindLibraryBody 管，这里只管工具条与筛选控件
+  const search = $('lib-search');
+  if (search) {
+    search.oninput = () => {
+      store.query = search.value;
+      store.page = 1;
+      // 输入时只重画主内容，避免整块 DOM 重建导致输入框失焦
+      const visible = libraryVisible();
+      const box = $('lib-body');
+      if (box) {
+        const pages = libraryPageCount(visible.length);
+        if (store.page > pages) store.page = pages;
+        box.innerHTML = store.tab === 'tracks'
+          ? (store.view === 'grid' ? libraryGrid(visible.slice(0, store.pageSize)) : libraryTable(visible.slice(0, store.pageSize)))
+          : libraryGroups(visible);
+        const counter = $('lib-count');
+        if (counter) {
+          counter.textContent = visible.length === store.tracks.length
+            ? `共 ${visible.length} 首` : `筛选出 ${visible.length} / ${store.tracks.length} 首`;
+        }
+        bindPager();
+        bindLibraryBody(box, visible);
+      }
+    };
+  }
+  const lyric = $('lib-lyric');
+  if (lyric) lyric.onchange = () => { store.lyricFilter = lyric.value; store.page = 1; paintLibraryBody(); };
+  const cover = $('lib-cover');
+  if (cover) cover.onchange = () => { store.coverFilter = cover.value; store.page = 1; paintLibraryBody(); };
+  const genre = $('lib-genre');
+  if (genre) genre.onchange = () => { store.genre = genre.value; store.page = 1; paintLibraryBody(); };
+  const filterBtn = $('lib-filter-btn');
+  if (filterBtn) filterBtn.onclick = () => { const node = $('lib-search'); node?.focus(); node?.select(); };
+  const reset = $('lib-reset');
+  if (reset) reset.onclick = () => {
+    Object.assign(store, { query: '', filter: 'all', lyricFilter: 'all', coverFilter: 'all', genre: '', page: 1, openGroup: '' });
+    if ($('lib-search')) $('lib-search').value = '';
+    paintLibraryBody();
+  };
+  const refresh = $('lib-refresh');
+  if (refresh) refresh.onclick = () => { store.loaded = false; renderLibrary(); };
+}
+
+/** 分页：委托在整个页面上，翻页 / 改每页条数都不会因为节点重建而失效。 */
+function bindPager() {
+  if (bindPager._bound) return;
+  bindPager._bound = true;
+  const jump = (raw) => {
+    const pages = libraryPageCount(libraryVisible().length);
+    let next = state.library.page;
+    if (raw === 'prev') next -= 1;
+    else if (raw === 'next') next += 1;
+    else next = Number(raw) || 1;
+    state.library.page = Math.min(pages, Math.max(1, next));
+    paintLibraryBody();
+  };
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-lib-page]');
+    if (!button) return;
+    jump(button.dataset.libPage);
+  });
+  document.addEventListener('change', (event) => {
+    const select = event.target.closest('[data-lib-size]');
+    if (!select) return;
+    state.library.pageSize = Number(select.value) || 50;
+    state.library.page = 1;
+    localStorage.setItem('mp-lib-size', String(state.library.pageSize));
+    paintLibraryBody();
   });
 }
 
-/** 横向歌曲条：一行一首，小封面 + 主信息 + 歌词预览；点一下弹详情卡片。 */
-function libraryRow(track) {
-  const cover = track.cover_url
-    ? `<img src="${esc(track.cover_url)}" alt="" loading="lazy" data-lib-cover>`
-    : '<span class="lib-cover-fallback">♪</span>';
-  const sub = [track.artist, track.album].filter(Boolean).join(' · ');
-  const lyrics = track.has_lyrics
-    ? `<div class="lib-row-lyrics" title="${esc(track.lyrics_preview)}">${esc(track.lyrics_preview || '（歌词为空）')}</div>`
-    : '<div class="lib-row-lyrics blank">无歌词</div>';
-  return `<article class="lib-row${track.complete ? '' : ' gap'}" data-lib="${esc(track.path)}"
-      title="${esc(track.path)}" role="button" tabindex="0">
-    <div class="lib-row-top">
-      <div class="lib-row-cover">${cover}</div>
-      ${track.complete ? '' : '<span class="lib-flag">待补全</span>'}
-    </div>
-    <div class="lib-row-main">
-      <div class="lib-row-title">${esc(track.title || track.name)}</div>
-      <div class="lib-row-sub${sub ? '' : ' blank'}">${esc(sub || '歌手 / 专辑待补全')}</div>
-    </div>
-    ${lyrics}
-  </article>`;
+function bindLibraryBody(box, visible) {
+  box.querySelectorAll('img[data-lib-cover]').forEach((img) => {
+    img.addEventListener('error', () => img.classList.add('hidden'), { once: true });
+  });
+  document.querySelectorAll('[data-lib-group]').forEach((button) => {
+    button.onclick = () => {
+      const key = button.dataset.libGroup;
+      state.library.openGroup = state.library.openGroup === key ? '' : key;
+      paintLibraryBody();
+    };
+  });
+  // 行 / 卡片：点空白处开详情，点按钮走各自的动作，避免一次点击触发两件事
+  box.querySelectorAll('[data-lib]').forEach((node) => {
+    const path = node.dataset.lib;
+    node.querySelectorAll('button[data-lib-edit],button[data-lib-scrape],button[data-lib-del]').forEach((button) => {
+      button.onclick = (event) => {
+        event.stopPropagation();
+        if (button.dataset.libEdit !== undefined) openLibraryDetail(path);
+        else if (button.dataset.libScrape !== undefined) openScrapeDialog(path);
+        else if (button.dataset.libDel !== undefined) removeLibraryTrack(path);
+      };
+    });
+    node.onclick = () => openLibraryDetail(path);
+    node.onkeydown = (event) => {
+      if (event.target !== node) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openLibraryDetail(path);
+    };
+  });
 }
 
-/** 弹出式卡片详情：完整元数据 + 歌词全文 + 操作按钮。 */
+/** 详情弹窗：左栏元数据表、右栏歌词全文，底部一排操作按钮。 */
 function libraryDetail(track) {
+  const percent = trackCompleteness(track);
   const row = (label, value) => `<div class="lib-detail-row">
       <span class="lib-meta-key">${esc(label)}</span>
       <span class="lib-detail-value${value ? '' : ' blank'}">${esc(value || '—')}</span></div>`;
   const missing = (track.missing || []).map(fieldName).join('、');
-  return `<div class="lib-detail">
-    <div class="lib-detail-grid">
-      ${row('标题', track.title)}
-      ${row('歌手', track.artist)}
-      ${row('专辑', track.album)}
-      ${row('专辑艺术家', track.album_artist)}
-      ${row('专辑轨号', track.track_number)}
-      ${row('碟号', track.disc_number)}
-      ${row('年份', track.year)}
-      ${row('时长', fmtDuration(track.duration))}
-      ${row('大小', fmtSize(track.size))}
-      ${row('内嵌封面', track.has_cover ? '有' : '无')}
-      ${row('缺少字段', missing || '无')}
+  const lyrics = track._lyrics !== undefined
+    ? (track._lyrics || '')
+    : (track.has_lyrics ? (track.lyrics_preview || '加载中…') : '');
+  return `<div class="lib-detail wide">
+    <div class="lib-detail-head">
+      ${coverThumb(track, 84)}
+      <div class="lib-detail-titles">
+        <div class="song-name">${esc(track.title || track.name)}</div>
+        <div class="song-sub">${esc([track.artist, track.album, track.year].filter(Boolean).join(' · ') || '—')}</div>
+        <div class="song-badges">${trackBadge(track)}
+          <span class="lib-tag mono">${esc(trackFormat(track))}</span>
+          <span class="conf ${completenessTone(percent / 100)}">完整度 ${percent}%</span>
+          <span class="badge">${track.has_lyrics ? '有歌词' : '无歌词'}</span></div>
+      </div>
     </div>
-    <div class="lib-path mono" title="${esc(track.path)}">${esc(track.path)}</div>
-    <div class="lib-lyrics-full">
-      <span class="field-label">歌词全文</span>
-      <pre>${esc(track._lyrics || (track.has_lyrics ? '加载中…' : '这个文件里没有歌词'))}</pre>
+    <div class="lib-detail-split">
+      <div class="lib-detail-col">
+        <span class="field-label">元数据</span>
+        <div class="lib-detail-grid">
+          ${row('标题', track.title)}
+          ${row('歌手', track.artist)}
+          ${row('专辑', track.album)}
+          ${row('专辑艺术家', track.album_artist)}
+          ${row('流派', track.genre)}
+          ${row('年份', track.year)}
+          ${row('专辑轨号', track.track_number)}
+          ${row('碟号', track.disc_number)}
+          ${row('时长', fmtDuration(track.duration))}
+          ${row('大小', fmtSize(track.size))}
+          ${row('内嵌封面', track.has_cover ? '有' : '无')}
+          ${row('缺少字段', missing || '无')}
+        </div>
+        <span class="field-label">文件路径</span>
+        <div class="lib-path mono" title="${esc(track.path)}">${esc(track.path)}</div>
+      </div>
+      <div class="lib-detail-col">
+        <span class="field-label">歌词全文${track.has_lyrics ? '' : '（文件里没有歌词）'}</span>
+        <pre class="lib-lyrics-body">${esc(lyrics || '这个文件里没有歌词')}</pre>
+      </div>
     </div>
-    <div class="btn-row">
-      <button class="ghost-btn small" data-lib-scrape="${esc(track.path)}">手动刮削</button>
-      <button class="ghost-btn small" data-lib-fill="${esc(track.path)}">只补这一首</button>
+    <div class="lib-detail-actions">
+      <button class="primary-btn small" data-lib-scrape>手动刮削</button>
+      <button class="ghost-btn small" data-lib-fill>只补这一首</button>
+      <button class="ghost-btn small" data-lib-close>关闭</button>
     </div>
   </div>`;
 }
 
-function renderLibraryTags() {
-  const visible = libraryVisible();
-  const box = $('lib-tags');
-  if (!box) return;
-  box.innerHTML = visible.map(libraryRow).join('')
-    || '<div class="empty">当前筛选条件下没有曲目</div>';
-  box.querySelectorAll('img[data-lib-cover]').forEach((img) => {
-    img.addEventListener('error', () => img.classList.add('hidden'), { once: true });
-  });
-  box.querySelectorAll('[data-lib]').forEach((node) => {
-    node.addEventListener('click', () => openLibraryDetail(node.dataset.lib));
-    node.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      openLibraryDetail(node.dataset.lib);
-    });
-  });
-}
-
-/** 点曲目：弹详情卡片；歌词按需懒加载，按钮在卡片打开后再绑定。 */
+/** 点曲目：弹宽版详情；歌词全文按需懒加载，卡片在数据回来后原位重绘。 */
 async function openLibraryDetail(path) {
   const track = (state.library.tracks || []).find((row) => row.path === path);
   if (!track) return;
   openModal('歌曲详情', libraryDetail(track));
+  $('modal').classList.add('wide-modal');
   const body = $('modal-body');
-  const scrape = body.querySelector('[data-lib-scrape]');
-  if (scrape) scrape.addEventListener('click', () => openScrapeDialog(scrape.dataset.libScrape));
-  const fill = body.querySelector('[data-lib-fill]');
-  if (fill) fill.addEventListener('click', () => fillOne(fill.dataset.libFill));
+  body.querySelector('[data-lib-scrape]')?.addEventListener('click', () => openScrapeDialog(path));
+  body.querySelector('[data-lib-fill]')?.addEventListener('click', () => fillOne(path));
+  body.querySelector('[data-lib-close]')?.addEventListener('click', closeModal);
   if (!track.has_lyrics || track._lyrics !== undefined) return;
   try {
     const detail = await api(`/api/library/detail?path=${encodeURIComponent(path)}`);
     track._lyrics = detail.lyrics || '';
-    if ($('modal-title').textContent === '歌曲详情') openModal('歌曲详情', libraryDetail(track));
+    if ($('modal-title').textContent !== '歌曲详情') return;
+    openModal('歌曲详情', libraryDetail(track));
+    $('modal').classList.add('wide-modal');
+    $('modal-body').querySelector('[data-lib-scrape]')?.addEventListener('click', () => openScrapeDialog(path));
+    $('modal-body').querySelector('[data-lib-fill]')?.addEventListener('click', () => fillOne(path));
+    $('modal-body').querySelector('[data-lib-close]')?.addEventListener('click', closeModal);
   } catch (error) { toast(error.message, true); }
 }
 
-function libraryStatCard(label, value, note, tone = '') {
-  return `<div class="panel stat stat-panel"><div class="stat-label">${esc(label)}</div>
-    <div class="stat-value big ${tone}">${esc(String(value ?? 0))}</div>
-    <div class="stat-note">${esc(note)}</div></div>`;
+/** 删除：本次不新增后端接口，点按只提示到文件管理器处理，绝不假装删掉。 */
+function removeLibraryTrack(path) {
+  toast(`音乐库不提供删除接口，请到文件管理器移除：${fileName(path)}`, true);
 }
 
 async function renderLibrary() {
   const store = state.library;
-  if (!store.loaded || store.loading) {
+  if (!store.loaded && !store.loading) {
     $('page').innerHTML = '<div class="panel"><div class="empty">正在扫描音乐库…</div></div>';
+    store.loading = true;
     try {
       const data = await api('/api/library');
       store.tracks = data.tracks || [];
@@ -617,214 +1010,79 @@ async function renderLibrary() {
       store.writeTags = data.write_tags;
       store.loaded = true;
     } catch (error) {
+      store.loading = false;
       $('page').innerHTML = `<div class="panel"><div class="empty">${esc(error.message)}</div></div>`;
       return;
-    }
+    } finally { store.loading = false; }
   }
   const stats = store.stats || {};
   const sourceChips = (store.sources || []).map((item) => `
     <span class="badge ${item.enabled ? 'info' : ''}">${esc(item.label)}${item.enabled ? '' : '（未启用）'}</span>`).join('');
+  const visible = libraryVisible();
+  const counts = libraryTabCounts(visible);
+  const searchFields = '搜索标题 / 歌手 / 专辑 / 专辑艺术家 / 文件名';
   $('page').innerHTML = `
     <div class="banner info">批量补全只写标签：不移动、不复制、不建硬链接或软链接，文件位置一律不变。</div>
-    <div class="bento">
-      ${libraryStatCard('曲目', stats.tracks, '每次进入都重新扫盘枚举')}
-      ${libraryStatCard('歌手', stats.artists, '按标签统计')}
-      ${libraryStatCard('专辑', stats.albums, '按标签统计')}
-      ${libraryStatCard('待补全', stats.incomplete, '缺标题/歌手/专辑等字段', stats.incomplete ? 'warn' : 'ok')}
-    </div>
-    <div class="panel">
+    ${libraryStats()}
+    <div class="panel lib-panel">
       <div class="panel-head">
         <div><h2>全部曲目</h2>
-          <p class="mono small">${esc(store.libraryDir)}${stats.tracks ? ` · 封面 ${stats.with_cover} 首 · 歌词 ${stats.with_lyrics} 首` : ''}</p></div>
+          <p class="mono small">${esc(store.libraryDir)} · 曲目 ${stats.tracks || 0} · 封面 ${stats.with_cover || 0} · 歌词 ${stats.with_lyrics || 0}${stats.incomplete ? ` · 待补全 ${stats.incomplete}` : ''}</p></div>
         <div class="btn-row">
-          <button class="ghost-btn" id="lib-reload">重新扫描</button>
-          <button class="ghost-btn" id="lib-auto">自动扫描查漏补缺</button>
+          <button class="ghost-btn" id="lib-auto">批量补全</button>
+          <button class="ghost-btn" id="lib-reload">刷新</button>
         </div>
       </div>
-      <div class="lib-toolbar">
-        ${LIBRARY_FILTERS.map(([id, label]) => `<button class="ghost-btn small${store.filter === id ? ' active' : ''}" data-lib-filter="${id}">${label}</button>`).join('')}
-        <input id="lib-search" class="lib-search" type="search" placeholder="按歌名 / 歌手 / 专辑 / 目录过滤" value="${esc(store.query)}">
-        <span class="small muted" id="lib-count"></span>
+      <div class="lib-filterbar">
+        <label class="lib-search-field">
+          ${spriteIcon('i-search')}
+          <input id="lib-search" class="lib-search" type="search" placeholder="${searchFields}" value="${esc(store.query)}">
+        </label>
+        <div class="lib-selects">
+          ${store.tab === 'genres' ? `<select id="lib-genre" class="lib-select">
+            <option value="">全部流派</option>
+            ${libraryGenres().map((name) => `<option value="${esc(name)}"${name === store.genre ? ' selected' : ''}>${esc(name)}</option>`).join('')}
+          </select>` : ''}
+          <select id="lib-lyric" class="lib-select">
+            ${LYRIC_FILTERS.map(([id, label]) => `<option value="${id}"${store.lyricFilter === id ? ' selected' : ''}>${label}</option>`).join('')}
+          </select>
+          <select id="lib-cover" class="lib-select">
+            ${COVER_FILTERS.map(([id, label]) => `<option value="${id}"${store.coverFilter === id ? ' selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </div>
       </div>
-      <p class="small muted" style="margin:0 0 10px">可用的刮削来源：${sourceChips || '—'}（在「刮削设置 → 标签与元数据」里勾选）</p>
-      <div id="lib-tags" class="lib-tags"></div>
-      <p class="small muted" style="margin:10px 0 0">点曲目卡片弹出详情；「手动刮削」可以选平台搜索并看到 1–10 的匹配度。</p>
+      <div class="lib-toolrow">
+        <div class="btn-row">
+          <button class="ghost-btn small" id="lib-filter-btn">过滤</button>
+          <button class="ghost-btn small" id="lib-reset">重置</button>
+          <button class="ghost-btn small" id="lib-refresh">刷新</button>
+        </div>
+        <div class="lib-toolrow-right">
+          <span class="small muted" id="lib-count"></span>
+          <div class="lib-viewswitch" role="group" aria-label="视图切换">
+            <button class="icon-btn small${store.view === 'table' ? ' active' : ''}" data-lib-view="table"
+              title="表格视图" aria-label="表格视图">${spriteIcon('i-table')}</button>
+            <button class="icon-btn small${store.view === 'grid' ? ' active' : ''}" data-lib-view="grid"
+              title="网格视图" aria-label="网格视图">${spriteIcon('i-grid')}</button>
+          </div>
+          <span id="lib-pager-top" class="lib-pager-slot"></span>
+        </div>
+      </div>
+      <div class="lib-sublabel small muted">可用的刮削来源：${sourceChips || '—'}（在「刮削设置 → 标签与元数据」里勾选）</div>
+      <div class="lib-tabs" role="tablist">
+        ${LIBRARY_TABS.map(([id, label]) => `<button class="lib-tab${store.tab === id ? ' active' : ''}" data-lib-tab="${id}" role="tab">
+          ${esc(label)} <em>${counts[id] || 0}</em></button>`).join('')}
+      </div>
+      <div id="lib-body" class="lib-body"></div>
+      <div id="lib-pager-main" class="lib-pager-main"></div>
     </div>`;
 
-  renderLibraryTags();
-  const count = $('lib-count');
-  if (count) count.textContent = `显示 ${libraryVisible().length} / ${store.tracks.length} 首`;
+  paintLibraryBody();
 
-  $('lib-reload').addEventListener('click', () => { store.loaded = false; renderLibrary(); });
-  $('lib-auto').addEventListener('click', autoFillLibrary);
-  document.querySelectorAll('[data-lib-filter]').forEach((button) => {
-    button.addEventListener('click', () => {
-      store.filter = button.dataset.libFilter;
-      renderLibrary();
-    });
-  });
-  const search = $('lib-search');
-  if (search) search.addEventListener('input', () => {
-    store.query = search.value;
-    renderLibraryTags();
-    if (count) count.textContent = `显示 ${libraryVisible().length} / ${store.tracks.length} 首`;
-  });
-}
-
-/* ---- 手动刮削：选平台 → 搜索 → 看匹配度 → 写入 ---- */
-async function openScrapeDialog(path) {
-  const track = (state.library.tracks || []).find((row) => row.path === path) || {};
-  state.library.scrape = { path, source: '', results: [], loading: false, query: {} };
-  const chips = (state.library.sources || []).map((item) => (
-    `<button class="cand-chip${item.enabled ? '' : ' dim'}" data-scrape-source="${esc(item.id)}"
-       ${item.enabled ? '' : 'disabled title="该平台未在设置中启用"'}>
-       <b>${esc(item.label)}</b><span>${item.enabled ? '已启用' : '未启用'}</span></button>`
-  )).join('');
-  openModal('手动刮削', `
-    <p class="small muted">文件：<span class="mono">${esc(path)}</span></p>
-    <div class="field" style="margin-top:12px">
-      <span class="field-label">来源平台（点一下选中，再搜索）</span>
-      <div class="cand-row" id="scrape-sources">
-        <button class="cand-chip active" data-scrape-source=""><b>全部已启用</b><span>逐平台并发搜</span></button>
-        ${chips}
-      </div>
-    </div>
-    <div class="grid" style="margin-top:12px">
-      <label class="field"><span class="field-label">歌名</span>
-        <input id="scrape-title" value="${esc(track.title || '')}"></label>
-      <label class="field"><span class="field-label">歌手</span>
-        <input id="scrape-artist" value="${esc(track.artist || '')}"></label>
-      <label class="field"><span class="field-label">专辑</span>
-        <input id="scrape-album" value="${esc(track.album || '')}"></label>
-    </div>
-    <div class="btn-row" style="margin-top:12px">
-      <button class="primary-btn" id="scrape-search">搜索</button>
-      <span class="small muted">匹配度 1–10：10 表示歌名、歌手、专辑全对得上；7 分以上才建议写入。</span>
-    </div>
-    <div id="scrape-results" class="scrape-results"></div>`);
-  document.querySelectorAll('[data-scrape-source]').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.library.scrape.source = button.dataset.scrapeSource;
-      document.querySelectorAll('[data-scrape-source]').forEach((node) => {
-        node.classList.toggle('active', node === button);
-      });
-    });
-  });
-  $('scrape-search').addEventListener('click', searchLibrary);
-}
-
-function scrapeResultCard(item, index) {
-  const meta = item.metadata || {};
-  const fills = (item.fills || []).map(fieldName).join('、');
-  return `<article class="scrape-result">
-    <div class="scrape-score ${scoreTone(item.score)}" title="匹配度 1–10">
-      <b>${item.score}</b><span>/10</span></div>
-    <div class="scrape-main">
-      <div class="scrape-title">${esc(meta.title || '—')}</div>
-      <div class="scrape-sub">${esc([meta.artist, meta.album, meta.year].filter(Boolean).join(' · ') || '—')}</div>
-      <div class="scrape-tags">
-        <span class="badge">${esc(item.source_label || sourceLabel(meta.source))}</span>
-        ${meta.track_number ? `<span class="badge">轨号 ${esc(meta.track_number)}</span>` : ''}
-        ${meta.album_artist ? `<span class="badge">专辑艺术家 ${esc(meta.album_artist)}</span>` : ''}
-        ${fills ? `<span class="badge info">可补：${esc(fills)}</span>` : '<span class="badge">没有能补的字段</span>'}
-      </div>
-    </div>
-    <div class="btn-row">
-      <button class="ghost-btn small" data-scrape-apply="${index}" data-dry="1">预览</button>
-      <button class="primary-btn small" data-scrape-apply="${index}" data-dry="0">写入标签</button>
-    </div>
-  </article>`;
-}
-
-async function searchLibrary() {
-  const scrape = state.library.scrape;
-  if (!scrape.path) return;
-  const box = $('scrape-results');
-  box.innerHTML = '<div class="empty">正在搜索…</div>';
-  try {
-    const payload = await api('/api/library/search', {
-      method: 'POST',
-      body: {
-        path: scrape.path,
-        source: scrape.source || '',
-        title: $('scrape-title').value.trim(),
-        artist: $('scrape-artist').value.trim(),
-        album: $('scrape-album').value.trim(),
-      },
-    });
-    scrape.results = payload.results || [];
-    scrape.query = payload.query || {};
-    box.innerHTML = scrape.results.length
-      ? `<p class="small muted">在 ${(payload.searched || []).map(sourceLabel).map(esc).join(' / ') || '所选平台'} 搜到 ${scrape.results.length} 条结果</p>`
-        + scrape.results.map(scrapeResultCard).join('')
-      : `<div class="empty">${esc(payload.searched && payload.searched.length ? '没有搜到结果，换个平台或改改搜索词试试' : '没有可用的来源平台，请先在设置里启用')}</div>`;
-    box.querySelectorAll('[data-scrape-apply]').forEach((button) => {
-      button.addEventListener('click', () => {
-        const item = scrape.results[Number(button.dataset.scrapeApply)];
-        applyScrapeResult(item, button.dataset.dry === '1');
-      });
-    });
-  } catch (error) {
-    box.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
-  }
-}
-
-async function applyScrapeResult(item, dryRun) {
-  if (!item) return;
-  try {
-    const payload = await api('/api/library/apply', {
-      method: 'POST',
-      body: { path: state.library.scrape.path, metadata: item.metadata, dry_run: dryRun },
-    });
-    const labels = (payload.written_labels && payload.written_labels.length
-      ? payload.written_labels
-      : payload.would_write_labels || []).join('、');
-    toast(payload.message || (labels ? `补全：${labels}` : '没有可写入的字段'), !dryRun && !labels);
-    state.library.loaded = false;
-    if (!dryRun) { closeModal(); await renderLibrary(); }
-    else if (labels) toast(`预览：将补全 ${labels}（文件位置不变）`);
-  } catch (error) { toast(error.message, true); }
-}
-
-/* ---- 自动扫描查漏补缺 ---- */
-async function autoFillLibrary() {
-  const sources = (state.library.sources || []).filter((item) => item.enabled);
-  if (!sources.length) { toast('请先在「刮削设置」里启用至少一个在线音源', true); return; }
-  const preview = await api('/api/library/scan', { method: 'POST' });
-  if (!preview.incomplete) { toast('库里的曲目字段都齐了，没什么要补的'); return; }
-  const sample = preview.tracks.slice(0, 5)
-    .map((row) => `· ${row.name}：缺 ${(row.missing_labels || []).join('、')}`).join('\n');
-  const more = preview.incomplete > 5 ? `\n… 另有 ${preview.incomplete - 5} 首` : '';
-  if (!confirm(
-    `自动扫描：${preview.incomplete} 首曲目缺字段\n${sample}${more}\n\n`
-    + `将用 ${sources.map((item) => item.label).join(' / ')} 逐首搜索并只补空字段。\n`
-    + '不会移动、复制、建硬链接或软链接任何文件。继续？'
-  )) return;
-  toast('正在扫描并补全，请稍候…');
-  try {
-    const payload = await api('/api/library/fill', {
-      method: 'POST',
-      body: { sources: sources.map((item) => item.id) },
-    });
-    toast(payload.message || `已补全 ${payload.filled} 首`);
-    state.library.loaded = false;
-    await renderLibrary();
-  } catch (error) { toast(error.message, true); }
-}
-
-async function fillOne(path) {
-  const sources = (state.library.sources || []).filter((item) => item.enabled).map((item) => item.id);
-  if (!sources.length) { toast('请先在「刮削设置」里启用至少一个在线音源', true); return; }
-  try {
-    const payload = await api('/api/library/fill', {
-      method: 'POST', body: { sources, paths: [path] },
-    });
-    const row = (payload.results || [])[0] || {};
-    const labels = (row.written || []).map(fieldName).join('、');
-    toast(labels ? `已补全：${labels}` : (payload.message || '没有可补的字段'), !labels);
-    state.library.loaded = false;
-    await renderLibrary();
-  } catch (error) { toast(error.message, true); }
+  // 工具条、Tab、筛选、分页的监听统一在 paintLibraryBody → bindLibraryActions 里挂，
+  // 每次重绘都是新节点，就地重挂不依赖事件委托。
+  $('lib-reload').onclick = () => { store.loaded = false; renderLibrary(); };
+  $('lib-auto').onclick = () => autoFillLibrary();
 }
 
 async function renderFiles() {
