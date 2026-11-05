@@ -18,11 +18,16 @@ const PAGE_META = {
   dashboard: ['概览', '目录状态、四种转移方式可用性与最近任务'],
   files: ['源文件', '扫描源目录、选择文件并生成整理计划'],
   plan: ['整理计划', '先预览源 → 目标的映射，确认后再执行'],
-  jobs: ['任务记录', '查看进度、取消任务、导出 CSV 报告'],
+  jobs: ['任务记录', '查看进度与明细、取消任务、导出表格（CSV）报告'],
   settings: ['刮削设置', '目录、转移方式、命名模板与账户'],
   docs: ['转移方式说明', '复制 / 移动 / 硬链接 / 软链接 的原理、限制与适用场景'],
 };
 const MODE_ORDER = ['copy', 'move', 'hardlink', 'symlink'];
+// 命名模板变量与中文释义；变量名本身是模板语法，保持英文
+const TEMPLATE_FIELD_LABELS = {
+  artist: '歌手', album: '专辑', album_artist: '专辑歌手', title: '标题', track: '音轨号',
+  disc: '碟号', year: '年份', ext: '扩展名', filename: '原文件名',
+};
 
 const state = {
   page: 'dashboard',
@@ -72,22 +77,14 @@ const shortPath = (path, head = 18, tail = 34) => {
   return `${text.slice(0, head)}…${text.slice(-tail)}`;
 };
 const MODE_LABELS = { copy: '复制', move: '移动', hardlink: '硬链接', symlink: '软链接' };
-const SOURCE_LABELS = { musicbrainz: 'MusicBrainz', netease: '网易云', local: '本地标签', manual: '手动填写' };
+const SOURCE_LABELS = { musicbrainz: '音乐数据库 MusicBrainz', netease: '网易云音乐', local: '本地标签', manual: '手动填写' };
 const sourceLabel = (name) => SOURCE_LABELS[String(name || '').toLowerCase()] || String(name || '未知来源');
 const modeLabel = (mode) => MODE_LABELS[String(mode || '')] || '未知方式';
 const STATUS_LABELS = {
   planned: '计划中', done: '成功', skipped: '跳过', failed: '失败', needs_review: '需确认',
 };
-/* 说明列只保留前两句（约 40 字），完整内容放悬停提示。 */
-function briefDetail(text, limit = 40) {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!value) return '—';
-  const parts = value.split('。').filter((part) => part.trim());
-  let head = parts.slice(0, 2).join('。') || value;
-  if (head.length > limit) head = `${head.slice(0, limit)}…`;
-  else if (parts.length) head += '。';
-  return head;
-}
+/* 说明列用后端给的中文摘要（detail_brief），完整原文放悬停提示。 */
+const detailBrief = (item) => String(item.detail_brief || item.detail || '').trim() || '—';
 const jobKind = (job) => ({ preview: '预览', scrape: '刮削', auto: '自动' })[job.kind] || '刮削';
 // 任务列表显示「歌曲名」，不再只给一串 id；id 退到提示与明细里。
 function jobLabel(job) {
@@ -343,8 +340,8 @@ async function renderDashboard() {
     ['当前账号', state.auth.username || '—', 'ok', state.auth.is_admin ? '管理员 · 会话保护已开启' : '普通账号 · 会话保护已开启'],
     ['自动刮削', watch.enabled ? '已开启' : '已关闭', watch.enabled ? 'ok' : 'warn',
       watch.enabled
-        ? `每 ${Math.round(watch.interval || 30)} 秒检查源目录${watch.tracked ? ` · 已记录 ${watch.tracked} 个文件` : ''}`
-        : '开启后新文件会自动刮削'],
+        ? `每 ${Math.round(watch.interval || 30)} 秒检查源目录${watch.tracked ? ` · 已记录 ${watch.tracked} 个文件` : ''}${watch.in_library ? ` · 库内 ${watch.in_library} 个已过滤` : ''}`
+        : '开启后只刮库里还没有的新文件'],
   ];
   const modeRows = data.capabilities.map((item) => `
     <tr>
@@ -472,7 +469,7 @@ async function showFileDetail(path) {
   openModal('文件详情', `
     <div class="table-wrap"><table><tbody>
       ${row('路径', data.file.path)}${row('大小', fmtSize(data.file.size))}
-      ${row('时长', fmtDuration(data.file.duration))}${row('码率', data.technical?.bitrate ? `${Math.round(data.technical.bitrate / 1000)} kbps` : '—')}
+      ${row('时长', fmtDuration(data.file.duration))}${row('码率', data.technical?.bitrate ? `${Math.round(data.technical.bitrate / 1000)} 千比特/秒` : '—')}
       ${row('内嵌封面', data.has_embedded_cover ? '有' : '无')}
     </tbody></table></div>
     <div class="divider"></div>
@@ -693,7 +690,7 @@ async function renderPlan() {
       <div class="panel-head"><div><h2>整理计划预览</h2>
         <p>${esc(job.id)} · ${job.dry_run ? '预览结果，尚未写入标签或移动任何文件' : '已执行任务'} · ${fmtTime(job.created_at)}</p></div>
         <div class="btn-row">
-          <button class="ghost-btn" id="plan-csv">导出 CSV</button>
+          <button class="ghost-btn" id="plan-csv">导出表格（CSV）</button>
           <button class="ghost-btn" id="plan-table">表格视图</button>
           ${job.dry_run ? '<button class="primary-btn" id="run-plan">按此计划执行整理</button>' : ''}
         </div></div>
@@ -820,7 +817,7 @@ async function renderJobs() {
     <td class="muted small">${esc(fmtTime(job.created_at))}</td>
     <td><div class="btn-row">
       <button class="ghost-btn small" data-job="${esc(job.id)}">明细</button>
-      <a class="ghost-btn small" href="/api/jobs/${esc(job.id)}/report">CSV</a>
+      <a class="ghost-btn small" href="/api/jobs/${esc(job.id)}/report">导出表格</a>
       ${job.dry_run ? `<button class="ghost-btn small" data-plan="${esc(job.id)}">打开计划</button>` : ''}
     </div></td></tr>`).join('');
   const watch = state.watch || {};
@@ -828,8 +825,8 @@ async function renderJobs() {
     <div class="panel"><div class="between">
       <div><h3>自动刮削 <span class="badge ${watch.enabled ? 'ok' : 'warn'}">${watch.enabled ? '开启' : '关闭'}</span></h3>
         <p class="small muted" style="margin-top:4px">${watch.enabled
-          ? `每 ${Math.round(watch.interval || 30)} 秒检查一次${watch.last_scan ? ` · 上次 ${esc(fmtTime(watch.last_scan))}` : ''} · 新文件会自动排入上面的任务`
-          : '开启后，源目录里出现新文件会自动刮削，无需手动操作'}</p></div>
+          ? `每 ${Math.round(watch.interval || 30)} 秒检查一次${watch.last_scan ? ` · 上次 ${esc(fmtTime(watch.last_scan))}` : ''} · 只刮库里还没有的新文件，已整理的自动跳过`
+          : '开启后，源目录里出现库里还没有的新文件会自动刮削，无需手动操作'}</p></div>
       <button class="ghost-btn" data-go="settings">${watch.enabled ? '调整' : '去开启'}</button>
     </div></div>`;
   $('page').innerHTML = `${watchBar}${progressCard}
@@ -864,9 +861,9 @@ async function showJobItems(jobId) {
       <div class="path-dir with-title" data-full="${esc(dirName(item.target))}">${esc(item.target ? shortPath(dirName(item.target)) : '—')}</div></td>
     <td class="mode-cell">${esc(item.mode_label || modeLabel(item.mode))}</td>
     <td>${statusBadge(item.status)}</td>
-    <td class="muted small detail-cell with-title" data-full="${esc(item.detail)}">${esc(briefDetail(item.detail))}</td></tr>`).join('');
+    <td class="muted small detail-cell with-title" data-full="${esc(item.detail)}">${esc(detailBrief(item))}</td></tr>`).join('');
   $('job-items').innerHTML = `<div class="panel"><div class="panel-head"><div><h2>任务明细</h2>
-      <p>${esc(fileName(items[0] && items[0].source) || '本次任务')} · <span class="mono">${esc(jobId)}</span></p></div></div>
+      <p>${esc(fileName(items[0] && items[0].source) || '本次任务')} · 说明列只写两条中文摘要，鼠标停留可看完整记录 · <span class="mono">${esc(jobId)}</span></p></div></div>
     <div class="table-wrap"><table class="items-table"><thead><tr><th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="5" class="empty">暂无明细</td></tr>'}</tbody></table></div></div>`;
   // 悬停提示在渲染后统一绑定，避免把长路径塞进 innerHTML 属性。
@@ -931,7 +928,7 @@ function renderSettings() {
   const modeCards = MODE_ORDER.map((mode) => {
     const info = state.modes.find((item) => item.mode === mode) || {};
     return `<div class="mode-card${s.transfer_mode === mode ? ' selected' : ''}" data-mode="${mode}">
-      <h3>${esc(info.label || mode)}</h3><div class="mode-en">${esc(info.english || '')}</div>
+      <h3>${esc(info.label || modeLabel(mode))}</h3><div class="mode-en">${esc(info.short || '')}</div>
       <p>${esc(info.short || '')}</p><div class="mode-tag">${s.transfer_mode === mode ? '✓ 当前使用' : '点击选用'}</div></div>`;
   }).join('');
   const presets = (meta.templates || []).map((preset) => (
@@ -939,7 +936,7 @@ function renderSettings() {
   )).join('');
   const sourceChecks = ['local', 'musicbrainz', 'netease'].map((name) => `
     <label class="check-line"><input type="checkbox" data-source="${name}" ${(s.metadata_sources || []).includes(name) ? 'checked' : ''}>
-      ${({ local: '本地标签与文件名（始终参与）', musicbrainz: 'MusicBrainz（国际曲库）', netease: '网易云音乐（中文曲库 / 歌词 / 封面）' })[name]}</label>`).join('');
+      ${({ local: '本地标签与文件名（始终参与）', musicbrainz: '音乐数据库 MusicBrainz（国际曲库）', netease: '网易云音乐（中文曲库 / 歌词 / 封面）' })[name]}</label>`).join('');
   const accountCard = state.auth.is_admin ? `
     <div class="panel">
       <div class="panel-head"><div><h2>账户</h2>
@@ -965,11 +962,11 @@ function renderSettings() {
         <label class="field"><span class="field-label">稳定等待（秒）</span>
           <input id="f-watch-settle" type="number" min="0" max="3600" step="5" value="${esc(watch.settle ?? 10)}"></label>
       </div>
-      <p class="small muted" style="margin:8px 0 12px">只处理<strong>开启监控之后</strong>新出现的文件：开启那一刻已存在的存量文件只登记、不刮削，想刮请手动点。稳定等待用于避开「还在下载 / 还在写入」的半成品文件，下载器的 <code>.part</code> / <code>.!qB</code> 之类临时文件也不会触发。已处理记录存在数据库里，重启不会重刮。</p>
+      <p class="small muted" style="margin:8px 0 12px">只处理<strong>库里还没有</strong>的音频：开启那一刻已存在的存量文件只登记、不刮削；已经整理进音乐库的文件（同名或同大小）也会自动过滤，不会再刮第二遍。稳定等待用于避开「还在下载 / 还在写入」的半成品文件，下载器的 <code>.part</code> / <code>.!qB</code> 之类临时文件同样不会触发。已处理记录存在数据库里，重启不会重刮。</p>
       <div class="btn-row">
         <button class="ghost-btn" id="watch-reset">把现有文件标记为已处理</button>
         <span class="small muted">${watch.enabled
-          ? `已记录 ${esc(watch.tracked || 0)} 个文件（含开启前就存在的 ${esc(watch.baselined || 0)} 个，不参与刮削）${watch.last_scan ? ` · 上次检查 ${esc(fmtTime(watch.last_scan))}` : ''}${watch.last_job_label ? ` · 最近任务：${esc(watch.last_job_label)}` : ''}`
+          ? `已记录 ${esc(watch.tracked || 0)} 个源文件（含开启前就存在的 ${esc(watch.baselined || 0)} 个），音乐库里已有 ${esc(watch.in_library || 0)} 个文件不再重复刮削${watch.last_scan ? ` · 上次检查 ${esc(fmtTime(watch.last_scan))}` : ''}${watch.last_job_label ? ` · 最近任务：${esc(watch.last_job_label)}` : ''}`
           : '开启后这里会显示检查状态'}</span>
       </div>
       ${watch.last_error ? `<p class="small" style="color:var(--danger);margin-top:8px">${esc(watch.last_error)}</p>` : ''}
@@ -988,7 +985,7 @@ function renderSettings() {
       <div class="mode-cards">${modeCards}</div>
     </div>
     <div class="panel"><div class="panel-head"><div><h2>命名与匹配</h2>
-      <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code>`).join(' ')}</p></div></div>
+      <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code> <span class="small muted">${esc(TEMPLATE_FIELD_LABELS[f] || '')}</span>`).join(' · ')}</p></div></div>
       <div class="grid cols-2">
         <label class="field"><span class="field-label">命名模板预设</span>
           <select id="preset">${presets}</select></label>
@@ -1000,7 +997,7 @@ function renderSettings() {
           <option value="overwrite" ${s.conflict_policy === 'overwrite' ? 'selected' : ''}>覆盖已有文件</option>
         </select></label>
         <label class="field"><span class="field-label">缺失字段占位符</span>
-          <input id="f-unknown" value="${esc(s.unknown_placeholder || 'Unknown')}"></label>
+          <input id="f-unknown" value="${esc(s.unknown_placeholder || '未知')}" placeholder="未知"></label>
         <label class="field"><span class="field-label">在线匹配置信度阈值（0–1）</span>
           <input id="f-threshold" type="number" min="0" max="1" step="0.05" value="${esc(s.confidence_threshold ?? 0.62)}"></label>
       </div>
@@ -1084,7 +1081,7 @@ async function saveSettings() {
     transfer_mode: state.settings.transfer_mode,
     naming_template: $('f-template').value.trim(),
     conflict_policy: $('f-conflict').value,
-    unknown_placeholder: $('f-unknown').value.trim() || 'Unknown',
+    unknown_placeholder: $('f-unknown').value.trim() || '未知',
     confidence_threshold: Number($('f-threshold').value),
     source_dir: $('f-source').value.trim(),
     library_dir: $('f-library').value.trim(),
@@ -1124,8 +1121,8 @@ async function renderDocs() {
   catch (error) { toast(error.message, true); return; }
   const blocks = (data.modes || []).map((mode) => `
     <div class="doc-block">
-      <h3>${esc(mode.label)} <span class="mono muted">${esc(mode.mode)}</span></h3>
-      <div class="doc-en">${esc(mode.english)} · ${esc(mode.short)}</div>
+      <h3>${esc(mode.label)}</h3>
+      <div class="doc-en">${esc(mode.short)}</div>
       <p><b>实现：</b>${esc(mode.how)}</p>
       <div class="grid cols-2" style="gap:12px">
         <div><b class="small">优点</b><ul>${(mode.pros || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>
@@ -1143,8 +1140,8 @@ async function renderDocs() {
     </div>`).join('');
   $('page').innerHTML = `
     <div class="banner info">${esc(data.ordering_note)}</div>
-    <div class="panel"><h2>Docker 挂载要点</h2>
-      <p class="muted small" style="margin-top:8px">硬链接要求「同一挂载点」：请把源目录和音乐库作为同一个宿主机父目录下的两个子目录一次性挂载到容器（例如 <code class="mono">/vol1/1000:/media</code>，对应 <code class="mono">/media/music_downloads</code> 与 <code class="mono">/media/音乐</code>）。同盘前提下两者 st_dev 相同即可建立硬链接；若其中一个目录在宿主机上属于另一个存储池或独立挂载点，则无论怎么映射都无法使用硬链接。软链接默认写相对路径，容器内外都能解析。</p>
+    <div class="panel"><h2>容器挂载要点</h2>
+      <p class="muted small" style="margin-top:8px">硬链接要求「同一挂载点」：请把源目录和音乐库作为同一个宿主机父目录下的两个子目录一次性挂载进容器（例如 <code class="mono">/vol1/1000:/media</code>，对应 <code class="mono">/media/music_downloads</code> 与 <code class="mono">/media/音乐</code>）。同盘前提下两者设备号相同即可建立硬链接；若其中一个目录在宿主机上属于另一个存储池或独立挂载点，则无论怎么映射都无法使用硬链接。软链接默认写相对路径，容器内外都能解析。</p>
     </div>
     <div class="grid" style="gap:var(--gap)">${blocks}</div>`;
 }

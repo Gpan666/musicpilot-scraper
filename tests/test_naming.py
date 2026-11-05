@@ -41,7 +41,7 @@ def test_year_and_unknown_placeholder() -> None:
 
 def test_sanitize_illegal_characters() -> None:
     assert sanitize_component('A/B:C*D?E"F') == "A_B_C_D_E_F"
-    assert sanitize_component("...") == "Unknown"
+    assert sanitize_component("...") == "未知"
     assert sanitize_component("CON") == "_CON"
     assert len(sanitize_component("x" * 400)) == 120
 

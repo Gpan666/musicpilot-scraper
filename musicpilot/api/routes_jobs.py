@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from musicpilot.api.context import AppContext, get_context
 from musicpilot.api.schemas import JobCreate
 from musicpilot.domain.models import JobKind
+from musicpilot.domain.summary import detail_payload
 from musicpilot.domain.transfer import mode_label
 from musicpilot.services.jobs import JobConflict
 from musicpilot.services.scraper import JobRequest
@@ -31,8 +32,8 @@ def _job_payload(context: AppContext, job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _item_payload(item: dict[str, Any]) -> dict[str, Any]:
-    """Add the Chinese label for the transfer mode, old rows included."""
-    return {**item, "mode_label": mode_label(str(item.get("mode") or ""))}
+    """中文方式名 + 中文摘要；完整原文仍放在 ``detail`` 里。"""
+    return detail_payload({**item, "mode_label": mode_label(str(item.get("mode") or ""))})
 
 
 @router.post("", status_code=202)
@@ -125,7 +126,7 @@ def report(job_id: str, context: AppContext = Depends(get_context)) -> Response:
                 item["title"],
                 item["artist"] or "",
                 item["album"] or "",
-                item["detail"],
+                item.get("detail_brief") or item["detail"],
             ]
         )
     content = "\ufeff" + buffer.getvalue()  # Excel-friendly UTF-8 BOM
