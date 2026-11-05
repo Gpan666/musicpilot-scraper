@@ -1,10 +1,12 @@
-# 仓库流水线入口，两套流水线拆文件维护，互不干扰：
+# 仓库流水线入口，三套流水线拆文件维护，互不干扰：
 #
 #   .cnb/github-sync.yml  GitHub 同步（push main 后把代码同步到 GitHub）
 #   .cnb/docker.yml       镜像发布（多架构构建并推 CNB Docker 制品库）
+#   .cnb/docker-hub.yml   镜像发布（多架构构建并推 Docker Hub，缺凭据时自动跳过）
 #
 # 同一分支下的多段 pipeline 会并发执行；某个文件写坏了不会拖累另一个。
 
 include:
   - .cnb/github-sync.yml
   - .cnb/docker.yml
+  - .cnb/docker-hub.yml

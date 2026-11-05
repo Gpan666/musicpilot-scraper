@@ -44,11 +44,12 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 ## 4. 发布链路（仓库已配好，开箱即用）
 
-根目录 `.cnb.yml` 只做入口，把两套流水线 include 进来，互不干扰：
+根目录 `.cnb.yml` 只做入口，把三套流水线 include 进来，互不干扰：
 
 | 平台 | 文件 | 触发 | 产物 |
 | --- | --- | --- | --- |
 | CNB | `.cnb/docker.yml` | main 推送 / tag 推送 / PR | `<CNB_DOCKER_REGISTRY>/<仓库路径>`（PR 只构建不推送） |
+| CNB | `.cnb/docker-hub.yml` | main 推送 / tag 推送 | `docker.io/<DOCKER_HUB_NAMESPACE>/<仓库名>`（缺凭据自动跳过） |
 | CNB | `.cnb/github-sync.yml` | main 推送 | 同步代码到 GitHub（原有逻辑，未改动） |
 | GitHub | `.github/workflows/docker.yml` | main 推送 / tag / PR / Release 发布 | `ghcr.io/<owner>/<repo>` |
 
@@ -56,6 +57,7 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 include:
   - .cnb/github-sync.yml
   - .cnb/docker.yml
+  - .cnb/docker-hub.yml
 ```
 
 同一分支下的多段 pipeline **并发执行**，某个文件写坏了不会连带另一个；同步 GitHub 用的密钥只在
@@ -73,7 +75,30 @@ include:
 - 镜像构建加了 `release` 锁，同一分支/tag 连续推送时旧构建不会和新构建抢着推同一批标签。
 - 构建缓存以 `:buildcache` 标签存回制品库，第二次构建只重跑改动的层。
 
-## 5. 权限怎么调
+## 5. 推到 Docker Hub
+
+`.cnb/docker-hub.yml` 是 `.cnb/docker.yml` 的孪生兄弟：同一份 Dockerfile、同一组架构、同样的标签规则，
+只是推到 Docker Hub。CNB 制品库那条不受影响，两边照旧各推各的。
+
+凭据放密钥仓库 `tsbyj.666/github-sync-secrets` 的 `docker-hub.yml`：
+
+```yaml title="docker-hub.yml"
+DOCKER_HUB_NAMESPACE: your-dockerhub-name  # 镜像名前缀，用户或组织
+DOCKER_HUB_USERNAME: your-dockerhub-name   # 登录名
+DOCKER_HUB_TOKEN: dckr_pat_xxx             # Access Token，不是账号密码
+allow_slugs: tsbyj.666/musicpilot-scraper
+allow_events: [push, tag_push, api_trigger]
+allow_branches: [main]
+```
+
+- `DOCKER_HUB_TOKEN` 在 Docker Hub 的 Account settings → Personal access tokens 里建，权限给 Read & Write。
+- `allow_*` 三行必须写：密钥仓库文件默认只允许仓库负责人/管理员触发的流水线引用，
+  `push` 自动触发时要靠 `allow_*` 放行（规则一旦声明就完全按规则校验，不再看触发者角色）。
+- 文件不存在 → 整段流水线跳过（`imports` 带 `ignoreError`），其它流水线照跑；
+  文件在但缺某一项 → 只跳过登录与推送，仍做一次本地构建验证，不会把流水线刷成红的。
+- 不接 `pull_request`：PR 里就能改写 Docker Hub 上的标签，没必要冒这个险。
+
+## 6. 权限怎么调
 
 容器默认以 `root` 启动，入口脚本按 `PUID:PGID` 建号、把 `/data` 与挂载的媒体目录 chown 后 `gosu` 降权。
 
@@ -81,7 +106,7 @@ include:
 - NAS 上多人共享媒体目录：`UMASK=000`（或 `002`），否则别人只读。
 - 想彻底不用 root：`docker run --user 1000:1000 ...`，此时入口脚本跳过 chown，直接运行。
 
-## 6. 别忘了的坑
+## 7. 别忘了的坑
 
 - **硬链接**：源与库必须在同一挂载点（一个 `/media` 挂进去），跨挂载点会失败，界面「写入自检」可实测。
 - **时区**：`TZ` 只影响容器时区，日志与任务时间随之变化。
