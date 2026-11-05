@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS job_items (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_job_items_job ON job_items(job_id, id);
+CREATE TABLE IF NOT EXISTS watch_seen (
+    path TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    mtime REAL NOT NULL,
+    seen_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS metadata_cache (
     key TEXT PRIMARY KEY,
     payload TEXT NOT NULL,
@@ -77,6 +83,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 """
 
+# 已处理指纹上限，防止 watch_seen 无限增长
+_MAX_SEEN = 200_000
 
 def _add_columns(
     connection: sqlite3.Connection, table: str, needed: dict[str, str]
@@ -306,6 +314,52 @@ class Store:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ---- watcher fingerprint -------------------------------------------
+    def load_seen(self, limit: int = _MAX_SEEN) -> dict[str, tuple[int, float]]:
+        """Recent fingerprints, newest first, so a restart never rescrapes old files."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT path, size, mtime FROM watch_seen ORDER BY seen_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return {row["path"]: (row["size"], row["mtime"]) for row in rows}
+
+    def save_seen(
+        self,
+        entries: dict[str, tuple[int, float]],
+        *,
+        prune: bool = False,
+        limit: int = _MAX_SEEN,
+    ) -> None:
+        if not entries:
+            return
+        self.initialize()
+        now = time.time()
+        with self._connect() as connection:
+            connection.executemany(
+                "INSERT INTO watch_seen(path, size, mtime, seen_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "size=excluded.size, mtime=excluded.mtime, seen_at=excluded.seen_at",
+                [(path, size, mtime, now) for path, (size, mtime) in entries.items()],
+            )
+            if prune:
+                self._prune_seen(connection, limit)
+
+    def clear_seen(self) -> None:
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM watch_seen")
+
+    @staticmethod
+    def _prune_seen(connection: sqlite3.Connection, limit: int) -> None:
+        total = connection.execute("SELECT COUNT(*) AS n FROM watch_seen").fetchone()["n"]
+        if total > limit:
+            connection.execute(
+                "DELETE FROM watch_seen WHERE path IN ("
+                "SELECT path FROM watch_seen ORDER BY seen_at ASC LIMIT ?)",
+                (total - limit,),
+            )
 
     # ---- users ----------------------------------------------------------
     def user_count(self) -> int:
