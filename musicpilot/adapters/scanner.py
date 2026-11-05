@@ -19,6 +19,7 @@ _TAG_KEYS: dict[str, tuple[str, ...]] = {
     "date": ("date", "year", "TDRC", "TYER", "\xa9day"),
     "tracknumber": ("tracknumber", "track", "TRCK", "trkn"),
     "discnumber": ("discnumber", "disc", "TPOS", "disk"),
+    "lyrics": ("lyrics", "unsyncedlyrics", "USLT", "\xa9lyr"),
 }
 _COVER_KEYS = ("APIC", "covr", "metadata_block_picture", "pictures")
 
@@ -88,6 +89,8 @@ def read_tags(path: Path) -> tuple[TrackMetadata, bool, dict[str, Any]]:
         year=year,
         track_number=_int_value(tag("tracknumber")),
         disc_number=_int_value(tag("discnumber")),
+        # 只用来判断「文件里有没有歌词」，内容本身不进对比（太长，界面只看有没有）
+        lyrics=tag("lyrics"),
         source="tags",
         external_id=str(path),
     )

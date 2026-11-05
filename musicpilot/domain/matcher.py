@@ -32,8 +32,9 @@ _NOISE_WORDS = (
     "featuring",
 )
 _BRACKETED = re.compile(r"[\[(（【][^\])）】]*[\])）】]")
-_TRACK_PREFIX = re.compile(r"^\s*(?:(\d{1,2})\s*[-.]?\s*)?(.*)$")
-_SEPARATORS = re.compile(r"\s+[-–—~]\s+")
+# 「01 - 歌手 - 歌名」「01.歌名」「01 歌名」都算带轨号；空格可有可无，中文文件名常写成「01-歌名」。
+_TRACK_PREFIX = re.compile(r"^\s*(?:(\d{1,2})\s*[-._]?\s*)?(.*)$")
+_SEPARATORS = re.compile(r"\s*[-–—~]\s*")
 _PUNCTUATION = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
 
 
@@ -202,7 +203,9 @@ def merge_metadata(local: TrackMetadata, remote: TrackMetadata) -> TrackMetadata
         title=local.title or remote.title,
         artist=local.artist or remote.artist,
         album=local.album or remote.album,
-        album_artist=local.album_artist or remote.album_artist or local.artist,
+        # 专辑艺术家：本地 > 在线 > 歌手。之前少了在线这一层，在线给了专辑艺术家也被丢掉，
+        # {album_artist} 于是永远回落成歌曲歌手，合辑专辑会被拆成一个个歌手目录。
+        album_artist=local.album_artist or remote.album_artist or local.artist or remote.artist,
         year=local.year or remote.year,
         track_number=local.track_number or remote.track_number,
         disc_number=local.disc_number or remote.disc_number,

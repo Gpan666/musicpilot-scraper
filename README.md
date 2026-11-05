@@ -6,13 +6,13 @@
 
 **只做一件事：把一堆音频文件刮削成整齐的音乐库。**
 
-扫描源目录 → 读标签、缺失就从文件名推断 → 查 MusicBrainz / 网易云补全 → 写回标签与封面 → 按命名模板转移进库（复制 / 移动 / 硬链接 / 软链接任选）。整理前先出**可视化预览**：每文件一张卡片，封面、标签「原值 → 新值」对比、全部在线候选，点选即改，确认后才落盘。Docker 一键部署，自带 Miuix 风格 Web 界面与登录，另有源目录监控的自动刮削。
+扫描源目录 → 读标签、缺失就从文件名推断 → 查 MusicBrainz / 网易云 / QQ音乐 / 酷狗 / 酷我补全 → 写回标签与封面 → 按命名模板转移进库（复制 / 移动 / 硬链接 / 软链接任选）。整理前先出**可视化预览**：每文件一张卡片，封面、标签「原值 → 新值」对比（含歌词）、全部在线候选，点选即改，确认后才落盘。Docker 一键部署，自带 Miuix 风格 Web 界面与登录，另有源目录监控的自动刮削。
 
 > 这是 [lzcer/MusicPilot](https://github.com/lzcer/MusicPilot) 的**重构精简版**：砍掉 PT 索引、下载器、歌单同步、媒体服务器刷新和 Telegram 机器人，只留「刮削 + 整理」主线，并把单文件巨石拆成分层模块。详见[与上游的差异](#2-与上游的差异)。
 
 ## 1. 它做什么 / 不做什么
 
-**做：** 递归扫描音频 → 读 / 推断标签 → 查 MusicBrainz、网易云按匹配置信度补全缺失字段 → 写回标题 / 歌手 / 专辑 / 年份 / 音轨 / 封面 / 可选歌词 → 按可配置模板生成目标路径，用四种方式之一把文件放进音乐库 → 先出 dry-run 可视化计划再执行，可导出 CSV 报告。
+**做：** 递归扫描音频 → 读 / 推断标签 → 查 MusicBrainz、网易云、QQ音乐、酷狗、酷我，按匹配置信度补全缺失字段 → 写回标题 / 歌手 / 专辑 / 专辑艺术家 / 年份 / 音轨 / 封面 / 可选歌词 → 按可配置模板生成目标路径，用四种方式之一把文件放进音乐库 → 先出 dry-run 可视化计划再执行，可导出 CSV 报告。
 
 **不做：** 不搜索、不解析、不下载任何种子或 PT 站点资源，不连 qBittorrent / Transmission；不管理歌单、不刷 Navidrome 等媒体服务器、不发 Telegram；不提供 / 存储 / 分发任何音乐，只处理你已有的本地文件。
 
@@ -29,7 +29,9 @@
 | 数据库 | PostgreSQL + SQLite 双轨、15 个迁移 | 单 SQLite，4 张表，启动即建 |
 | 认证 | 默认 `admin/musicpilot` 弱口令 | 首次注册管理员；PBKDF2 加盐 + HMAC 会话 Cookie + 登录限速 |
 
-**本次新增能力：** 四种转移方式可选、写入自检、`dry-run` 可视化计划、任务进度 / 取消、CSV 报告、置信度阈值、命名模板预设、夜间 / 日间 / 跟随系统主题、源目录「浏览…」点选器、先注册后登录的认证、源目录监控的**自动刮削**。
+**本次新增能力：** 四种转移方式可选、写入自检、`dry-run` 可视化计划、任务进度 / 取消、CSV 报告、置信度阈值、命名模板预设、夜间 / 日间 / 跟随系统主题、源目录「浏览…」点选器、先注册后登录的认证、源目录监控的**自动刮削**，以及 **5 个在线音源**（MusicBrainz / 网易云 / QQ音乐 / 酷狗 / 酷我）。
+
+**版本号：** 功能面已经稳定，`1.0.0` 重新起算，之后按语义化版本发布（`v1.0.0` / `v1.1.0` / `v1.0.1`），发布说明见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 3. 工作流程
 
@@ -39,6 +41,20 @@
 ```
 
 两个约定：① **标签写入发生在转移之前**，让硬链接 / 软链接的目标也带完整标签（源文件标签同时被补全，不想改源请关闭「写入标签」或用复制模式）；② **在线结果只填空**，已有标签优先，置信度低于阈值时不采用并标「需人工确认」。
+
+在线音源（设置页可逐项开关，`MP_METADATA_SOURCES` 可配默认值）：
+
+| 音源 | 曲库强项 | 能给什么 |
+| --- | --- | --- |
+| MusicBrainz | 国际曲库 / 古典 | 标题、歌手、专辑、**专辑艺术家**、年份、**轨号**、封面 |
+| 网易云音乐 | 中文曲库 | 标题、歌手、专辑、**专辑艺术家**、年份、封面、歌词 |
+| QQ音乐 | 中文 / 华语 | 标题、歌手、专辑、年份、**轨号**、封面、歌词 |
+| 酷狗音乐 | 中文 / 网络歌曲 | 标题、歌手、专辑、歌词 |
+| 酷我音乐 | 中文 / 流行 | 标题、歌手、专辑、**专辑艺术家**、封面、歌词 |
+
+音源都是各家网页版的公开接口，改动随时可能发生；单个音源挂掉只是少一份候选，不会让任务失败。
+
+轨号与歌名：**专辑**内按轨号排序整理，轨号写进文件标签；**歌曲文件名不带轨号**（不会再出现「00 - 歌名」）。同级目录里只有这一首歌时按单曲处理，模板里的 `{track}` 自动省掉，轨号仍写进标签。
 
 ## 4. 快速开始（Docker）
 
@@ -63,7 +79,7 @@ docker compose up -d --build
 ### 4.1 用现成的通用镜像
 
 不想自己构建就用发布好的多架构镜像（amd64 / arm64 / armv7），一份镜像跑遍 NAS 与服务器。
-CNB 制品库与 Docker Hub 同步发布，按网络可达性挑一个：
+Docker Hub 与 GHCR 同步发布（`.cnb/docker-hub.yml` / `.github/workflows/docker.yml`），按网络可达性挑一个：
 
 ```bash
 docker run -d --name musicpilot \
@@ -72,12 +88,13 @@ docker run -d --name musicpilot \
   -v /volume1/media:/media \
   -v /volume1/docker/musicpilot:/data \
   --restart unless-stopped \
-  docker.cnb.cool/tsbyj.666/musicpilot-scraper:latest   # 或 tsbyj/musicpilot-scraper:latest
+  tsbyj/musicpilot-scraper:latest   # 或 ghcr.io/<你的 GitHub 用户名>/musicpilot-scraper:latest
 ```
 
 - `PUID` / `PGID` / `UMASK`：容器内进程的运行身份与文件权限，挂载目录写不进去时改成宿主属主（`id 用户名` 可查）。
+- 镜像标签按语义化版本推：`:latest`、`:1.0.0`、`:v1.0.0`、`:1.0`、`:1`、`:sha-xxxxxxxx`，具体规则见 [docs/docker.md](docs/docker.md#4-发布链路仓库已配好开箱即用)。
 - 容器内只有两个约定：数据落 `/data`，媒体在 `/media`（源 `/media/downloads`、库 `/media/music`）。
-- 镜像由 `.cnb/docker.yml`（CNB 制品库）、`.cnb/docker-hub.yml`（Docker Hub）、`.github/workflows/docker.yml`（GHCR）三处多架构构建，均经 `.cnb.yml` include 生效；构建细节、发布链路与权限排查见 [docs/docker.md](docs/docker.md)。
+- 镜像由 `.cnb/docker-hub.yml`（Docker Hub，经 `.cnb.yml` include 生效）与 `.github/workflows/docker.yml`（GHCR）两处多架构构建；打 tag 时 `.cnb/release.yml` 还会同时发 CNB Release 与 GitHub Release。构建细节、标签规则与权限排查见 [docs/docker.md](docs/docker.md)。
 
 常用环境变量：`PUID`/`PGID`/`UMASK`（容器运行身份）、`MP_HOST_MEDIA_PATH`（媒体父目录）、`MP_TRANSFER_MODE`（copy/move/hardlink/symlink，默认 copy）、`MP_CONFIDENCE_THRESHOLD`（默认 0.62）、`MP_BROWSABLE_ROOTS`（目录选择器根，默认 `/media`）、`MP_WATCH_ENABLED`（自动刮削，默认 false）。完整见 `.env.example`。
 
@@ -96,7 +113,8 @@ docker run -d --name musicpilot \
 
 六个页面：概览、源文件、整理计划、任务记录、刮削设置、转移方式说明。
 
-- **可视化整理计划**：卡片墙，封面 + 标签原值 / 新值对比 + 全部在线候选，点选即改；顶部按「全部 / 需确认 / 已匹配 / 异常」筛选；执行时人工选择作为覆盖项提交。
+- **可视化整理计划**：卡片墙，封面 + 标签原值 / 新值对比（含专辑歌手、轨号）+ 全部在线候选，点选即改；顶部按「全部 / 需确认 / 已匹配 / 异常」筛选；执行时人工选择作为覆盖项提交。
+- **刮削前后对比**：任务明细里点歌曲名看卡片，逐字段「文件原标签 → 写入库」，**歌词单独一项**（有没有、写了多少行，可展开看全文）。
 - **界面与字体**：按 [Miuix](https://github.com/compose-miuix-ui/miuix) 配色（亮 `#3482FF` / 暗 `#277AF7`）+ 小米 [MiSans](https://hyperos.mi.com/font/) 可变字体（`clamp()` 自适应），默认夜间模式。
 - **目录选择器**：源 / 库目录「浏览…」点选，后端限定在 `MP_BROWSABLE_ROOTS` 内。
 - **登录与注册**：认证常开，首次注册管理员（PBKDF2 加盐 + HMAC 会话 Cookie + 登录限速），之后为登录页；公网请套 HTTPS。

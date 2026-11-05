@@ -966,6 +966,14 @@ td.th-key { color: var(--text-2); width: 130px; }
 .song-diff-row .side.after.filled { border-color: color-mix(in srgb, var(--ok) 34%, transparent); }
 .song-diff-row .side.after.blank { background: transparent; border-style: dashed; border-color: var(--outline); }
 .diff-blank { font-size: var(--fs-footnote); color: var(--text-3); }
+/* 歌词单行显示「有 / 没有」，全文折叠，免得一张卡被几百行歌词撑爆 */
+.song-lyrics { grid-column: 2 / -1; margin: 2px 0 4px; }
+.song-lyrics summary { font-size: var(--fs-footnote); color: var(--text-3); cursor: pointer; }
+.song-lyrics pre {
+  max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  margin: 6px 0 0; padding: 8px; border-radius: 8px; font-size: var(--fs-footnote);
+  background: var(--surface-2); color: var(--text-2);
+}
 .song-files {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
   padding: 12px; border-radius: 12px; background: var(--surface);
