@@ -282,3 +282,55 @@ def test_clear_jobs_keeps_running_job(client: TestClient, workspace: dict[str, A
     assert cleared["removed"] >= 1
     remaining = client.get("/api/jobs").json()["jobs"]
     assert all(job["status"] in {"pending", "running"} for job in remaining)
+
+
+def test_items_expose_album_artist_before_and_after(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """明细里点歌曲要能看前后对比：专辑艺术家与原标签都得有。"""
+    audio = make_audio(workspace["source"] / "01 - Queen - Bohemian Rhapsody.flac")
+    job = wait_for_job(
+        client,
+        client.post("/api/jobs", json={"kind": "preview", "paths": [str(audio)]}).json()["id"],
+    )
+    item = client.get(f"/api/jobs/{job['id']}/items").json()["items"][0]
+    for key in (
+        "title", "artist", "album", "album_artist", "year",
+        "local_title", "local_artist", "local_album", "local_album_artist", "local_year",
+    ):
+        assert key in item, key
+    assert item["album_artist"] == "Queen"
+    assert item["local_album_artist"] == "Queen"
+
+
+def test_manual_choice_keeps_written_album_artist(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """人工选择时专辑艺术家按提交值写入，不再被歌手覆盖。"""
+    audio = make_audio(workspace["source"] / "01 - Queen - Bohemian Rhapsody.flac")
+    client.put("/api/settings", json={"values": {"transfer_mode": "copy"}})
+    payload = client.post(
+        "/api/jobs",
+        json={
+            "kind": "scrape",
+            "dry_run": False,
+            "paths": [str(audio)],
+            "choices": {
+                str(audio): {
+                    "title": "Bohemian Rhapsody",
+                    "artist": "Queen & David Bowie",
+                    "album": "A Night At The Opera",
+                    "album_artist": "Queen",
+                    "year": 1975,
+                    "source": "netease",
+                }
+            },
+        },
+    )
+    assert payload.status_code == 202
+    job = wait_for_job(client, payload.json()["id"])
+    assert job["status"] == "completed"
+    item = client.get(f"/api/jobs/{job['id']}/items").json()["items"][0]
+    assert item["artist"] == "Queen & David Bowie"
+    assert item["album_artist"] == "Queen"
+    assert "/Queen/" in item["target"]

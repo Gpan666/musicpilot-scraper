@@ -53,7 +53,7 @@ const state = {
   options: { organize: true, skipLowConfidence: false },
   picker: { target: null, path: '', root: '', parent: null, entries: [], loading: false },
   plan: { jobId: null, items: [], choices: new Map(), filter: 'all' },
-  drawer: { jobId: null },
+  drawer: { jobId: null, items: [] },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -523,18 +523,22 @@ function planChoice(item) {
 function localMetaOf(item) {
   return metaOf({
     title: item.local_title, artist: item.local_artist, album: item.local_album,
-    year: item.local_year, track_number: item.local_track_number,
+    album_artist: item.local_album_artist, year: item.local_year,
+    track_number: item.local_track_number,
   });
 }
 function itemFromPlan(item) {
   return metaOf({
-    title: item.title, artist: item.artist, album: item.album, year: item.year,
+    title: item.title, artist: item.artist, album: item.album,
+    album_artist: item.album_artist, year: item.year,
     track_number: item.track_number,
   });
 }
 function metaOf(values) {
+  const artist = values.artist || '';
   return {
-    title: values.title || '', artist: values.artist || '', album: values.album || '',
+    title: values.title || '', artist, album: values.album || '',
+    album_artist: values.album_artist || artist || '',
     year: values.year || '', track_number: values.track_number || '',
   };
 }
@@ -601,7 +605,8 @@ function planCard(item, index) {
       </div>
       <div class="plan-source mono" title="${esc(item.source)}">${esc(shortPath(item.source))}</div>
       <div class="diff">
-        ${field('title', '标题')}${field('artist', '歌手')}${field('album', '专辑')}${field('year', '年份')}
+        ${field('title', '标题')}${field('artist', '歌手')}${field('album', '专辑')}
+        ${field('album_artist', '专辑歌手')}${field('year', '年份')}
       </div>
       <div class="plan-target mono" title="${esc(item.target)}">${esc(shortPath(item.target) || '—')}</div>
       <div class="plan-foot">
@@ -754,7 +759,8 @@ function buildChoices() {
     if (entry.index === -1) {
       payload = metaOf({
         title: item.local_title, artist: item.local_artist, album: item.local_album,
-        year: item.local_year, track_number: item.local_track_number,
+        album_artist: item.local_album_artist, year: item.local_year,
+        track_number: item.local_track_number,
       });
       payload.source = 'manual';
     } else {
@@ -778,6 +784,7 @@ function buildChoices() {
       title: String(payload.title || ''),
       artist: payload.artist || null,
       album: payload.album || null,
+      album_artist: payload.album_artist || payload.artist || null,
       year: payload.year === '' ? null : Number(payload.year) || null,
       track_number: payload.track_number === '' ? null : Number(payload.track_number) || null,
       cover_url: payload.cover_url || null,
@@ -895,6 +902,7 @@ function openDrawer(title, sub) {
   document.body.classList.add('drawer-open');
 }
 function closeDrawer() {
+  state.drawer.items = [];
   $('drawer').classList.add('hidden');
   $('drawer').setAttribute('aria-hidden', 'true');
   document.body.classList.remove('drawer-open');
@@ -917,19 +925,109 @@ async function showJobItems(jobId) {
   $('drawer-stat').textContent = items.length
     ? `共 ${items.length} 项 · 成功 ${done} · 跳过 ${skipped} · 失败 ${failed} · 任务号 ${jobId}`
     : `任务号 ${jobId}`;
-  const rows = items.map((item) => `<tr>
-    <td class="path-cell"><div class="path-name" title="${esc(fileName(item.source))}">${esc(fileName(item.source))}</div>
+  state.drawer.items = items;
+  const rows = items.map((item, index) => `<tr>
+    <td class="path-cell"><button class="song-link" data-item="${index}" title="查看刮削前后的标签对比">
+        <span class="path-name">${esc(fileName(item.source))}</span></button>
       <div class="path-dir with-title" data-full="${esc(dirName(item.source))}">${esc(shortPath(dirName(item.source)))}</div></td>
     <td class="path-cell"><div class="path-name" title="${esc(fileName(item.target))}">${esc(fileName(item.target) || '—')}</div>
       <div class="path-dir with-title" data-full="${esc(dirName(item.target))}">${esc(item.target ? shortPath(dirName(item.target)) : '—')}</div></td>
     <td class="mode-cell">${esc(item.mode_label || modeLabel(item.mode))}</td>
     <td>${statusBadge(item.status)}</td>
     <td class="muted small detail-cell with-title" data-full="${esc(item.detail)}">${esc(detailBrief(item))}</td></tr>`).join('');
-  $('drawer-body').innerHTML = `<div class="table-wrap"><table class="items-table"><thead><tr>
+  $('drawer-body').innerHTML = items.length
+    ? `<p class="small muted drawer-tip">点歌曲名查看刮削前后的标签对比卡片</p>
+      <div class="table-wrap"><table class="items-table"><thead><tr>
       <th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" class="empty">这次任务没有明细</td></tr>'}</tbody></table></div>`;
+      <tbody>${rows}</tbody></table></div>`
+    : '<div class="empty">这次任务没有明细</div>';
   // 悬停提示在渲染后统一绑定，避免把长路径塞进 innerHTML 属性。
   $('drawer-body').querySelectorAll('.with-title').forEach((node) => { node.title = node.dataset.full || ''; });
+  $('drawer-body').querySelectorAll('[data-item]').forEach((node) => {
+    node.addEventListener('click', () => showItemDiff(items[Number(node.dataset.item)]));
+  });
+}
+
+/* 刮削前后对比：单个文件一张卡，左右并排「原标签 → 新标签」。 */
+const DIFF_FIELDS = [
+  ['title', '歌曲名'], ['year', '年份'], ['album', '专辑'],
+  ['album_artist', '专辑艺术家'], ['artist', '歌手'],
+];
+const itemValue = (item, key) => {
+  const raw = item[key];
+  return raw === null || raw === undefined || String(raw).trim() === '' ? '' : String(raw);
+};
+const localValue = (item, key) => {
+  const raw = item[`local_${key}`];
+  return raw === null || raw === undefined || String(raw).trim() === '' ? '' : String(raw);
+};
+
+function diffCell(value) {
+  return value ? esc(value) : '<span class="diff-blank">文件里没有</span>';
+}
+
+function diffRow(item, key, label) {
+  const before = localValue(item, key);
+  const after = itemValue(item, key);
+  // 旧值被改写才划掉并标红，只是补空的旧值保持原样
+  const replaced = before && after && before !== after;
+  const filled = !before && after;
+  const tone = replaced ? 'replaced' : filled ? 'filled' : before ? '' : 'missing';
+  return `<div class="song-diff-row">
+    <span class="diff-key">${esc(label)}</span>
+    <span class="side before${replaced ? ' replaced' : ''}${before ? '' : ' blank'}">${diffCell(before)}</span>
+    <span class="diff-arrow">→</span>
+    <span class="side after${tone === 'missing' ? ' blank' : ''}${filled ? ' filled' : ''}">${diffCell(after)}</span>
+  </div>`;
+}
+
+function songCardHtml(item) {
+  const changed = DIFF_FIELDS.filter(([key]) => {
+    const before = localValue(item, key);
+    const after = itemValue(item, key);
+    return before !== after;
+  }).length;
+  const cover = item.cover_url
+    ? `<img src="/api/cover?url=${encodeURIComponent(item.cover_url)}" alt="" loading="lazy" data-song-cover>`
+    : `<img src="/api/cover?path=${encodeURIComponent(item.source)}" alt="" loading="lazy" data-song-cover>`;
+  return `<div class="song-card-wrap"><article class="song-card" data-tone="${changed ? 'changed' : 'same'}">
+    <div class="song-card-head">
+      <div class="song-cover">${cover}<span class="song-cover-fallback">♪</span></div>
+      <div class="song-card-titles">
+        <div class="song-name">${esc(itemValue(item, 'title') || fileName(item.source))}</div>
+        <div class="song-sub">${esc([itemValue(item, 'artist'), itemValue(item, 'album'), itemValue(item, 'year')]
+          .filter(Boolean).join(' · ')) || '—'}</div>
+        <div class="song-badges">
+          ${statusBadge(item.status)}
+          <span class="badge">${esc(item.mode_label || modeLabel(item.mode))}</span>
+          <span class="badge">${esc(sourceLabel(item.source_name))}</span>
+          <span class="conf ${confidenceTone(Number(item.confidence) || 0)}" title="匹配置信度">${(Number(item.confidence) || 0).toFixed(2)}</span>
+        </div>
+      </div>
+    </div>
+    <div class="song-diff">
+      <div class="song-diff-head"><span>字段</span><span>刮削前（文件原标签）</span><span></span><span>刮削后（写入库）</span></div>
+      ${DIFF_FIELDS.map(([key, label]) => diffRow(item, key, label)).join('')}
+    </div>
+    <div class="song-files">
+      <div><span class="field-label">源文件</span>
+        <div class="path-name">${esc(fileName(item.source))}</div>
+        <div class="path-dir mono">${esc(dirName(item.source))}</div></div>
+      <div><span class="field-label">目标位置</span>
+        <div class="path-name">${esc(fileName(item.target) || '—')}</div>
+        <div class="path-dir mono">${esc(item.target ? dirName(item.target) : '—')}</div></div>
+    </div>
+    <p class="song-note" title="${esc(item.detail)}">${esc(detailBrief(item))}</p>
+    ${changed ? '' : '<p class="small muted">这次没有改写已有标签，只是补空或原样保留。</p>'}
+  </article></div>`;
+}
+
+function showItemDiff(item) {
+  if (!item) return;
+  openModal('刮削前后对比', songCardHtml(item));
+  $('modal-body').querySelectorAll('[data-song-cover]').forEach((img) => {
+    img.addEventListener('error', () => img.classList.add('hidden'), { once: true });
+  });
 }
 
 async function createJob(kind, dryRun, forcedPaths, choices) {
