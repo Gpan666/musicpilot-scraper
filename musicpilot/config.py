@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     watch_settle: float = 10.0
 
     @property
+    def web_dir(self) -> Path:
+        """Locate the front-end assets: env override, bundled copy, then source tree."""
+        candidates = (
+            self.static_dir,
+            Path(__file__).resolve().parent / "web",
+            Path(__file__).resolve().parent.parent / "web",
+        )
+        for candidate in candidates:
+            if (candidate / "index.html").is_file():
+                return candidate
+        return self.static_dir
+
+    @property
     def database_path(self) -> Path:
         return self.data_dir / "musicpilot.db"
 

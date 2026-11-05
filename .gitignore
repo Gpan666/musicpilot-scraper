@@ -14,3 +14,4 @@ data/
 *.db-shm
 web/node_modules/
 .DS_Store
+musicpilot/web/
