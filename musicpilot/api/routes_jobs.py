@@ -104,6 +104,23 @@ def cancel_job(job_id: str, context: AppContext = Depends(get_context)) -> dict[
     return {"ok": True, "message": "已请求取消，当前文件处理完成后停止"}
 
 
+@router.delete("/{job_id}")
+def delete_job(job_id: str, context: AppContext = Depends(get_context)) -> dict[str, Any]:
+    try:
+        removed = context.jobs.delete(job_id)
+    except JobConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {"ok": True, "message": "任务记录已删除"}
+
+
+@router.delete("")
+def clear_jobs(context: AppContext = Depends(get_context)) -> dict[str, Any]:
+    removed = context.jobs.clear()
+    return {"ok": True, "removed": removed, "message": f"已清空 {removed} 条任务记录"}
+
+
 @router.get("/{job_id}/report")
 def report(job_id: str, context: AppContext = Depends(get_context)) -> Response:
     if context.jobs.get(job_id) is None:
