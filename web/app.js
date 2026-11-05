@@ -4,15 +4,20 @@
  */
 'use strict';
 
+/** 引用 index.html 里的 SVG sprite；图标统一走矢量，避免字符图标在缺字字体下变成方块或宽度抖动。 */
+function spriteIcon(name) {
+  return `<svg class="icon" aria-hidden="true"><use href="#${name}"></use></svg>`;
+}
+
 const NAV = [
   { group: '工作区' },
-  { id: 'dashboard', label: '概览', icon: '◉' },
-  { id: 'files', label: '源文件', icon: '♫' },
-  { id: 'plan', label: '整理计划', icon: '⇄' },
-  { id: 'jobs', label: '任务记录', icon: '≡' },
+  { id: 'dashboard', label: '概览', icon: 'i-dashboard' },
+  { id: 'files', label: '源文件', icon: 'i-files' },
+  { id: 'plan', label: '整理计划', icon: 'i-plan' },
+  { id: 'jobs', label: '任务记录', icon: 'i-jobs' },
   { group: '配置' },
-  { id: 'settings', label: '刮削设置', icon: '⚙' },
-  { id: 'docs', label: '转移方式说明', icon: 'ⓘ' },
+  { id: 'settings', label: '刮削设置', icon: 'i-settings' },
+  { id: 'docs', label: '转移方式说明', icon: 'i-docs' },
 ];
 const PAGE_META = {
   dashboard: ['概览', '目录状态、四种转移方式可用性与最近任务'],
@@ -154,7 +159,7 @@ function applyTheme(preference) {
   localStorage.setItem('mp-theme', preference);
   const theme = effectiveTheme(preference);
   document.documentElement.setAttribute('data-theme', theme);
-  $('theme-icon').textContent = theme === 'dark' ? '☀' : '☾';
+  $('theme-icon').innerHTML = spriteIcon(theme === 'dark' ? 'i-sun' : 'i-moon');
   $('theme-toggle').title = theme === 'dark' ? '切换到日间模式' : '切换到夜间模式';
   document.querySelectorAll('[data-theme-choice]').forEach((button) => {
     button.className = `ghost-btn${button.dataset.themeChoice === preference ? ' active' : ''}`;
@@ -212,7 +217,7 @@ function renderNav() {
     item.group
       ? `<div class="nav-group">${esc(item.group)}</div>`
       : `<button class="nav-item${state.page === item.id ? ' active' : ''}" data-page="${item.id}">
-           <span class="nav-icon">${item.icon}</span><span>${esc(item.label)}</span></button>`
+           <span class="nav-icon">${spriteIcon(item.icon)}</span><span>${esc(item.label)}</span></button>`
   )).join('');
   document.querySelectorAll('[data-page]').forEach((button) => {
     button.addEventListener('click', () => go(button.dataset.page));
@@ -387,7 +392,7 @@ async function renderDashboard() {
     <div class="grid cols-2">
       <div class="panel"><div class="panel-head"><h2>最近任务</h2>
         <button class="ghost-btn" data-go="jobs">查看全部</button></div>
-        <div class="table-wrap"><table><thead><tr><th>文件</th><th>类型</th><th>状态</th><th>数量</th><th>时间</th></tr></thead>
+        <div class="table-wrap"><table class="jobs-table"><thead><tr><th>文件</th><th>类型</th><th>状态</th><th>数量</th><th>时间</th></tr></thead>
           <tbody>${jobs || '<tr><td colspan="5" class="empty">暂无任务</td></tr>'}</tbody></table></div></div>
       <div class="panel"><div class="panel-head"><h2>最近整理</h2></div>
         <div class="table-wrap"><table><thead><tr><th>文件</th><th>方式</th><th>时间</th></tr></thead>
@@ -430,8 +435,8 @@ async function renderFiles() {
           <button class="ghost-btn" id="select-all">全选</button>
           <button class="ghost-btn" id="clear-selection">清空选择</button>
         </div></div>
-      <div class="table-wrap"><table><thead><tr>
-        <th></th><th>文件名</th><th>标题</th><th>歌手</th><th>专辑</th><th>大小</th><th>时长</th><th>操作</th>
+      <div class="table-wrap"><table class="files-table"><thead><tr>
+        <th class="col-pick"></th><th>文件名</th><th>标题</th><th>歌手</th><th>专辑</th><th>大小</th><th>时长</th><th>操作</th>
       </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">源目录中没有找到音频文件</td></tr>'}</tbody></table></div>
     </div>
     <div class="panel">
@@ -709,7 +714,7 @@ async function renderPlan() {
         ${PLAN_FILTERS.map(([id, label]) => `<button class="ghost-btn small${state.plan.filter === id ? ' active' : ''}" data-filter="${id}">${label}</button>`).join('')}
         <span class="small muted" id="plan-hint"></span>
       </div>
-      <div id="plan-grid" class="plan-grid"></div>
+      <div id="plan-grid" class="plan-grid plan-grid-cards"></div>
       <div id="plan-table-wrap" class="hidden"></div>
     </div>
     <div class="panel"><h3>执行说明</h3>
@@ -822,7 +827,7 @@ async function renderJobs() {
     <td>${statusBadge(job.status)}</td>
     <td class="muted">${esc(job.processed || 0)} / ${esc(job.total || 0)}</td>
     <td class="muted small">${esc(fmtTime(job.created_at))}</td>
-    <td><div class="btn-row">
+    <td><div class="btn-row nowrap">
       <button class="ghost-btn small" data-job="${esc(job.id)}">明细</button>
       <a class="ghost-btn small" href="/api/jobs/${esc(job.id)}/report">导出表格</a>
       ${job.dry_run ? `<button class="ghost-btn small" data-plan="${esc(job.id)}">打开计划</button>` : ''}
@@ -844,7 +849,7 @@ async function renderJobs() {
         <button class="ghost-btn" id="refresh-jobs">刷新</button>
         <button class="ghost-btn danger-text" id="clear-jobs" ${jobs.length ? '' : 'disabled'}>清空记录</button>
       </div></div>
-      <div class="table-wrap"><table><thead><tr><th>文件 / 歌曲名</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
+      <div class="table-wrap"><table class="jobs-table"><thead><tr><th>文件 / 歌曲名</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="6" class="empty">暂无任务</td></tr>'}</tbody></table></div>
     </div>`;
   $('refresh-jobs').addEventListener('click', renderJobs);
