@@ -31,6 +31,8 @@
   --radius-field: 15px;
   --radius-pill: 999px;
   --gap: clamp(12px, 1.2vw, 18px);
+  /* 内容栅格的硬上限：超宽屏上一行卡片不会被拉成一米长，剩下的留白平分到两侧 */
+  --content-max: 1520px;
   --transition: 180ms cubic-bezier(.2, .8, .2, 1);
 }
 
@@ -93,6 +95,20 @@
 
 * { box-sizing: border-box; }
 
+/* 矢量图标：描边跟随文字颜色，尺寸跟随字号，块级化免得基线间距把按钮撑高 */
+.icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 html, body { min-height: 100%; }
 
 body {
@@ -126,12 +142,13 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .truncate { max-width: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .btn-row { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.btn-row.nowrap { flex-wrap: nowrap; }
 .divider { height: 1px; background: var(--divider); margin: 16px 0; }
 
 /* ---------- shell ---------- */
 .app-shell {
   display: grid;
-  grid-template-columns: 252px minmax(0, 1fr);
+  grid-template-columns: 248px minmax(0, 1fr);
   min-height: 100vh;
 }
 .sidebar {
@@ -144,6 +161,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
   background: var(--surface);
   border-right: 1px solid var(--divider);
   overflow-y: auto;
+  scrollbar-width: thin;
 }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 10px 24px; }
 .brand-mark { width: 40px; height: 40px; border-radius: 13px; flex: none; }
@@ -218,18 +236,40 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .user-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .foot-note { padding: 10px 8px 0; font-size: var(--fs-tiny); color: var(--text-3); }
 
-.main { min-width: 0; padding: clamp(18px, 2.2vw, 34px); }
+/* .main 是 flex 纵向容器：页头、横幅、页面内容都吃同一个内容宽度，
+ * 不会再出现「页头贴左、卡片居中」这种两套对齐。 */
+.main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(16px, 1.8vw, 30px) clamp(16px, 2vw, 32px) clamp(20px, 2.4vw, 40px);
+}
+.main > * {
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+}
 .topbar {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: var(--gap);
+  padding-bottom: clamp(12px, 1.2vw, 16px);
+  border-bottom: 1px solid var(--divider);
 }
 .topbar-title h1 { font-size: clamp(24px, 1.8vw + 17px, 32px); }
 .subtitle { margin-top: 5px; color: var(--text-2); font-size: var(--fs-small); }
 .top-actions { display: flex; align-items: center; gap: 9px; flex: none; }
-.page { max-width: 1240px; display: flex; flex-direction: column; gap: var(--gap); }
+.page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  padding-bottom: 8px;
+}
+/* 页面里的卡片一律铺满内容宽度；表头 / 空态的排版才能和上方卡片对齐 */
+.page > * { width: 100%; min-width: 0; }
 
 /* ---------- cards & grids ---------- */
 .card, .panel {
@@ -255,16 +295,27 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-@media (max-width: 1080px) { .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 820px) { .cols-2, .cols-3 { grid-template-columns: 1fr; } }
+/* 两列组的第二列最容易在 1100 左右被挤成窄条，早点落成一列 */
+@media (max-width: 1180px) { .cols-2 { grid-template-columns: 1fr; } }
+@media (max-width: 1024px) { .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .cols-2, .cols-3, .cols-4 { grid-template-columns: 1fr; } }
 
-.stat { display: flex; flex-direction: column; gap: 6px; }
+.stat { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+/* 统计卡数量不是四的整数倍时，末行会被撑成半行留白：
+ * 3n+1 张时最后一张跨满整行，3n+2 / 3n+3 张时最后两张各跨一格半。 */
+@media (min-width: 1025px) {
+  .cols-4 > .stat:last-child:nth-child(4n + 1) { grid-column: 1 / -1; }
+  .cols-4 > .stat:nth-last-child(-n + 2):nth-child(4n + 2) { grid-column: span 2; }
+}
 .stat-label { font-size: var(--fs-footnote); color: var(--text-3); }
+/* 路径这类长值：优先在分隔符后折行，实在放不下才整词断开 */
 .stat-value {
   font-size: clamp(15px, .6vw + 13px, 19px);
   font-weight: var(--wght-heading);
   font-variation-settings: 'wght' var(--wght-heading);
-  word-break: break-all;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 .stat-value.ok { color: var(--ok); }
 .stat-value.bad { color: var(--danger); }
@@ -407,11 +458,24 @@ th {
   white-space: nowrap;
 }
 td { padding: 11px 12px; border-bottom: 1px solid var(--divider); vertical-align: middle; }
+/* 首列（文件名）可截断，其余列按内容撑开；否则 .truncate 的 1px 上限会被表格算法无视 */
+td.truncate { max-width: 260px; }
+
+/* 列宽分配：首列（文件名）吃掉剩余宽度，状态与操作列按内容排开。
+ * 不做这件事，浏览器会把「预览」这种两字单元格挤成竖排、把操作按钮折到第二行。 */
+.jobs-table th:first-child, .jobs-table td:first-child { width: 30%; }
+.jobs-table th, .jobs-table td { white-space: nowrap; }
+.jobs-table td:first-child { white-space: normal; }
+.files-table th:first-child, .files-table td:first-child { width: 44px; }
+.files-table th:nth-child(2), .files-table td:nth-child(2) { width: 26%; }
+.files-table th:last-child, .files-table td:last-child { width: 1%; text-align: right; }
+.files-table .col-pick { padding-right: 0; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--surface-2); }
 td.th-key { color: var(--text-2); width: 130px; }
 .empty { padding: 34px 12px !important; text-align: center; color: var(--text-3); }
 /* 任务明细：文件名与所在目录各占一行，长路径只压缩中间，首尾都看得见。 */
+/* 明细表列多且含双行路径，给一个下限，窄屏靠容器横向滚动而不是把字挤成竖排 */
 .items-table { min-width: 720px; }
 .items-table .path-cell { min-width: 190px; max-width: 320px; }
 .path-name { font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button); overflow-wrap: anywhere; }
@@ -461,8 +525,9 @@ td.th-key { color: var(--text-2); width: 130px; }
 .banner.bad { background: color-mix(in srgb, var(--danger) 14%, var(--surface)); color: var(--danger); }
 
 /* ---------- mode cards / docs ---------- */
+/* 四张转移方式卡：1320 以下四列会把中文正文挤成每行三四个字，提前并成两列 */
 .mode-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 1080px) { .mode-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1320px) { .mode-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .mode-cards { grid-template-columns: 1fr; } }
 .mode-card {
   padding: 16px;
@@ -483,8 +548,8 @@ td.th-key { color: var(--text-2); width: 130px; }
 .doc-en { font-size: var(--fs-small); color: var(--text-3); margin-bottom: 12px; }
 .doc-block p { font-size: var(--fs-small); margin-bottom: 12px; }
 .doc-block ul { margin: 6px 0 12px; padding-left: 20px; font-size: var(--fs-small); color: var(--text-2); }
-.doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; font-size: var(--fs-small); color: var(--text-2); }
-@media (max-width: 700px) { .doc-grid { grid-template-columns: 1fr; } }
+.doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; font-size: var(--fs-small); color: var(--text-2); }
+@media (max-width: 1080px) { .doc-grid { grid-template-columns: 1fr; } }
 
 /* ---------- overlays / dialogs ---------- */
 .overlay {
@@ -628,12 +693,21 @@ td.th-key { color: var(--text-2); width: 130px; }
 .plan-stat.ok b { color: var(--ok); }
 .plan-stat.warn b { color: var(--warn); }
 .plan-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: var(--gap); }
-.plan-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(396px, 100%), 1fr)); }
+/* 一张计划卡要放下「封面 + 双行路径 + 原值→新值 + 候选」，360 起步才不至于把 diff 列压扁；
+ * 卡片模式下 auto-fill 最少两列，宽屏自动均分成 2/3/4 列，右侧不会被留空。 */
+.plan-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); }
+.plan-grid-cards { grid-template-columns: repeat(auto-fill, minmax(max(360px, calc(50% - 6px)), 1fr)); }
 @media (max-width: 520px) {
-  .plan-grid { grid-template-columns: 1fr; }
+  .plan-grid, .plan-grid-cards { grid-template-columns: 1fr; }
   .plan-card { flex-direction: column; }
   .plan-cover { width: 100%; height: 128px; }
-  .diff-row { grid-template-columns: 34px minmax(0, .9fr) 12px minmax(0, 1.1fr); }
+  /* 窄屏把「标签 / 原值 → 新值」拆成两行竖排，输入框不再被压出卡片右边缘。
+     注意：这里必须保留 4 条轨道并显式定位，否则隐藏箭头后 input 会落进窄轨道被压成竖条。 */
+  .plan-card .diff-row { grid-template-columns: minmax(0, .9fr) 12px minmax(0, 1.1fr); gap: 4px 6px; }
+  .plan-card .diff-key { grid-column: 1 / -1; grid-row: 1; font-size: var(--fs-tiny); }
+  .plan-card .diff-before { grid-column: 1; grid-row: 2; white-space: normal; overflow-wrap: anywhere; }
+  .plan-card .diff-arrow { grid-column: 2; grid-row: 2; }
+  .plan-card .diff-input { grid-column: 3; grid-row: 2; }
 }
 
 .plan-card {
@@ -674,8 +748,9 @@ td.th-key { color: var(--text-2); width: 130px; }
 .conf.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 .conf.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .conf.bad { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
-.diff { display: flex; flex-direction: column; gap: 4px; }
-.diff-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) 14px minmax(0, 1.1fr); align-items: center; gap: 6px; }
+.diff { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.diff-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) 14px minmax(0, 1.1fr); align-items: center; gap: 6px; min-width: 0; }
+.diff-row > * { min-width: 0; }
 .diff-key { font-size: var(--fs-footnote); color: var(--text-3); }
 .diff-before {
   font-size: var(--fs-small); color: var(--text-2);
@@ -807,9 +882,13 @@ td.th-key { color: var(--text-2); width: 130px; }
   .user-chip { padding: 4px 6px; background: transparent; }
   .user-name, .foot-note { display: none; }
 }
+@media (max-width: 900px) {
+  /* 窄屏顶栏换行时，导航条与页头之间不留双份分隔线 */
+  .topbar { border-bottom: 1px solid var(--divider); }
+}
 @media (max-width: 620px) {
   .main { padding: 14px; }
-  .topbar { flex-direction: column; align-items: stretch; }
+  .topbar { flex-direction: row; align-items: flex-start; flex-wrap: nowrap; }
   .top-actions { justify-content: flex-end; }
   .cols-4, .mode-cards { grid-template-columns: 1fr; }
   .card-head, .panel-head { flex-direction: column; }
