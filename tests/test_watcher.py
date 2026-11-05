@@ -150,3 +150,73 @@ def test_watch_ignores_downloader_leftovers(client: TestClient, workspace: dict[
     time.sleep(3)
     assert _auto_jobs(client) == []
     assert client.get("/api/watch").json()["detected"] == 0
+
+
+def test_watch_skips_files_already_in_library(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """库里有同名文件就说明刮过了：即使指纹变了也不再刮第二遍。"""
+    source = make_audio(workspace["source"] / "01 - Queen - Bohemian Rhapsody.flac")
+    in_library = make_audio(
+        workspace["library"] / "Queen" / "01 - Queen - Bohemian Rhapsody.flac",
+        content=b"already-scraped",
+    )
+    _enable_watch(client)
+    _wait_for(lambda: client.get("/api/watch").json()["in_library"] >= 1, timeout=20)
+    # 清掉指纹模拟「旧版本升级 / 手动 reset」后的重启，此时只能靠库内文件判断
+    client.post("/api/watch/reset")
+    time.sleep(4)
+    jobs = client.get("/api/jobs?limit=20").json()["jobs"]
+    assert [job["kind"] for job in jobs] == [], "库里已有的文件不应触发自动刮削"
+    assert source.stat().st_size != in_library.stat().st_size
+
+
+def test_watch_skips_library_match_by_name_suffix(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """命名模板改了标题，库里的文件名只剩后缀相同，也要认出来。"""
+    make_audio(workspace["source"] / "01 - Queen - Bohemian Rhapsody.flac")
+    make_audio(workspace["library"] / "Queen" / "01 - Bohemian Rhapsody.flac")
+    _enable_watch(client)
+    _wait_for(lambda: client.get("/api/watch").json()["in_library"] >= 1, timeout=20)
+    client.post("/api/watch/reset")
+    time.sleep(4)
+    assert client.get("/api/jobs?limit=20").json()["jobs"] == []
+
+
+def test_watch_does_not_repeat_after_tag_write_changes_source(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    """写标签会改动源文件的大小与修改时间，不能因此再刮一遍。"""
+    _enable_watch(client)
+
+    def auto_jobs() -> list[dict[str, Any]]:
+        jobs = client.get("/api/jobs?limit=20").json()["jobs"]
+        return [job for job in jobs if job["kind"] == "auto" and job["status"] == "completed"]
+
+    _wait_for(lambda: client.get("/api/watch").json()["last_scan"], timeout=20)
+    path = make_audio(workspace["source"] / "09 - Queen - We Will Rock You.flac")
+    _wait_for(lambda: auto_jobs(), timeout=20)
+    first = len(auto_jobs())
+    # 模拟写标签：改大小与 mtime
+    path.write_bytes(b"fake-audio-payload-with-tags")
+    time.sleep(6)
+    assert len(auto_jobs()) == first, "刮削后的源文件不应再次触发任务"
+
+
+def test_job_items_carry_chinese_brief(client: TestClient, workspace: dict[str, Any]) -> None:
+    """明细的说明列要有中文摘要，且不含英文异常原文与英文源名。"""
+    make_audio(workspace["source"] / "05 - Queen - Radio Ga Ga.flac")
+    created = client.post("/api/jobs", json={"kind": "scrape", "paths": []})
+    assert created.status_code == 202, created.text
+    job_id = created.json()["id"]
+    wait_for_job(client, job_id)
+    items = client.get(f"/api/jobs/{job_id}/items").json()["items"]
+    assert items
+    for item in items:
+        brief = item["detail_brief"]
+        assert brief.endswith("。")
+        assert len(brief) <= 64
+        assert "inode" not in brief and "OSError" not in brief
+        assert "netease" not in brief and "musicbrainz" not in brief
+        assert item["mode_label"] == "复制"

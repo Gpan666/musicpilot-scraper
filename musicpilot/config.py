@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     write_lyrics: bool = False
     metadata_sources: str = "local,musicbrainz,netease"
     confidence_threshold: float = 0.62
-    unknown_placeholder: str = "Unknown"
+    unknown_placeholder: str = "未知"
 
     musicbrainz_user_agent: str = "MusicPilot-Scraper/2.0 (self-hosted personal use)"
     http_proxy: str = ""
@@ -141,7 +141,7 @@ class RuntimeSettings(BaseModel):
         default_factory=lambda: ["local", "musicbrainz", "netease"]
     )
     confidence_threshold: float = Field(default=0.62, ge=0.0, le=1.0)
-    unknown_placeholder: str = Field(default="Unknown", min_length=1, max_length=40)
+    unknown_placeholder: str = Field(default="未知", min_length=1, max_length=40)
     # 自动刮削：轮询源目录，发现新文件就自动开一个刮削任务
     watch_enabled: bool = False
     watch_interval: float = Field(default=30.0, ge=5.0, le=3600.0)
