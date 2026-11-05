@@ -107,6 +107,7 @@ class PlanItem:
     title: str = ""
     artist: str | None = None
     album: str | None = None
+    album_artist: str | None = None
     year: int | None = None
     track_number: int | None = None
     detail: str = ""
@@ -114,6 +115,7 @@ class PlanItem:
     local_title: str = ""
     local_artist: str | None = None
     local_album: str | None = None
+    local_album_artist: str | None = None
     local_year: int | None = None
     local_track_number: int | None = None
     cover_url: str | None = None
