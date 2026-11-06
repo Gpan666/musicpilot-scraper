@@ -22,6 +22,8 @@ _TAG_KEYS: dict[str, tuple[str, ...]] = {
     # ID3 的歌词帧在 mutagen 里叫 ``USLT::<语言>``（如 USLT::chi），只写 "USLT" 永远取不到。
     "lyrics": ("lyrics", "unsyncedlyrics", "USLT", "\xa9lyr"),
 }
+# 封面键名各格式不同：mp3/ID3 是 ``APIC:<描述>``（如 ``APIC:`` / ``APIC:cover``），
+# MP4 是 ``covr``，FLAC 的 ``pictures`` 走属性。带后缀的键靠 ``_cover_entry`` 做前缀匹配。
 _COVER_KEYS = ("APIC", "covr", "metadata_block_picture", "pictures")
 
 
@@ -57,17 +59,46 @@ def _first(audio: Any, keys: tuple[str, ...]) -> str | None:
     return None
 
 
-def _prefixed(audio: Any, key: str) -> Any:
+def _prefixed(audio: Any, key: str, sep: str = "::", *, allow_bare: bool = False) -> Any:
+    """Find a tag whose key is ``key + sep + suffix`` (e.g. ``USLT::chi``).
+
+    ``allow_bare`` also accepts the key itself, for mutagen's ``APIC:`` frame
+    with an empty description: it is stored as ``"APIC:"``, which the exact
+    lookup of ``"APIC"`` misses.
+    """
     tags = getattr(audio, "tags", None)
     keys = getattr(tags, "keys", None)
     if not callable(keys):
         return None
     try:
-        for candidate in keys():
-            if str(candidate).startswith(key + "::"):
+        candidates = list(keys())
+        for candidate in candidates:
+            name = str(candidate)
+            if name == key and not allow_bare:
+                continue
+            if name == key or name.startswith(key + sep):
                 return tags[candidate]
     except (KeyError, ValueError, TypeError):
         return None
+    return None
+
+
+def _cover_entry(audio: Any) -> Any:
+    """Return the first embedded picture *frame* without decoding its bytes.
+
+    Only looks at tag metadata, so checking "has cover" costs no more than
+    reading the tags that were already read.
+    """
+    for key in _COVER_KEYS:
+        value = _safe_get(audio, key)
+        if value is None:
+            # ID3 的封面帧是 ``APIC:<描述>``，描述可能为空，也可能是 ``cover`` 之类
+            value = _prefixed(audio, key, ":", allow_bare=True)
+        if value is None:
+            continue
+        values = value if isinstance(value, (list, tuple)) else [value]
+        if values:
+            return values[0]
     return None
 
 
@@ -112,10 +143,8 @@ def read_tags(path: Path) -> tuple[TrackMetadata, bool, dict[str, Any]]:
         source="tags",
         external_id=str(path),
     )
-    has_cover = any(
-        _safe_get(audio, key) or getattr(audio, "pictures", None)
-        for key in _COVER_KEYS
-    )
+    # 判「有没有封面」与取封面（embedded_cover）用同一套键名：能取到就算有。
+    has_cover = _cover_entry(audio) is not None
     info = getattr(audio, "info", None)
     technical = {
         "duration": float(getattr(info, "length", 0) or 0) or None,
@@ -154,21 +183,18 @@ def embedded_cover(path: Path) -> tuple[bytes, str] | None:
     if audio is None:
         return None
 
-    pictures = getattr(audio, "pictures", None)  # FLAC
-    if pictures:
-        data = bytes(getattr(pictures[0], "data", b"") or b"")
-        if data:
-            return data, _mime_of(pictures[0])
-
-    for key in ("APIC:", "APIC", "covr"):  # ID3 / MP4
-        value = _safe_get(audio, key)
-        if value is None:
-            continue
-        frame = value[0] if isinstance(value, list) and value else value
-        data = getattr(frame, "data", frame)
-        if isinstance(data, bytes) and data:
-            return data, _mime_of(frame)
-    return None
+    # 与 read_tags 判封面共用 _cover_entry：FLAC 的 ``pictures`` 是属性，
+    # mp3 的 ``APIC:<描述>`` 和 MP4 的 ``covr`` 是标签，两种都覆盖。
+    frame = _cover_entry(audio)
+    if frame is None:
+        return None
+    data = getattr(frame, "data", None)
+    if data is None:
+        data = frame
+    data = bytes(data) if isinstance(data, (bytes, bytearray)) else b""
+    if not data:
+        return None
+    return data, _mime_of(frame)
 
 
 def _mime_of(frame: Any) -> str:

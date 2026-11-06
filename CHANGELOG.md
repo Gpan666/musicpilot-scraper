@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### 修复
+
+- **内嵌封面的 mp3 不再被误判为「没有封面」**（只改 `musicpilot/adapters/scanner.py`，接口与前端未动）。mutagen 读 ID3 时封面帧的键名是 `APIC:<描述>`（空描述时就是 `APIC:`），而 `read_tags()` 判封面用的是精确键 `"APIC"`，永远取不到，于是 `has_cover=False`；同一个文件的 `embedded_cover()` 却查的是 `APIC:`，能取到封面。现在判封面与取封面共用 `_cover_entry()`（精确键 + `<键>:<后缀>` 前缀匹配，FLAC 的 `pictures` 与 MP4 的 `covr` 原样保留），能取到就算有。不额外读文件、不把封面字节搬进内存。修完后 `/api/library` 的 `stats.with_cover`、音乐库页与概览页的「有封面」计数会变多（是修正，不是回归），「待补全」也会相应变少。
+
 ### 变更
 
 - **概览页重排：目录/转移方式搬进设置，概览只留「现在能做什么、库里有什么」**（只改 `web/app.js`、`web/style.css`、`web/index.html`，后端与接口未动）。
