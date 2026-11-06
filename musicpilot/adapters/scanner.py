@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from pathlib import Path
 from typing import Any
 
 from mutagen import File as MutagenFile
+from mutagen.flac import Picture
 
 from musicpilot.domain.matcher import merge_metadata, parse_filename
 from musicpilot.domain.models import AudioFile, TrackMetadata
@@ -23,8 +25,8 @@ _TAG_KEYS: dict[str, tuple[str, ...]] = {
     "lyrics": ("lyrics", "unsyncedlyrics", "USLT", "\xa9lyr"),
 }
 # 封面键名各格式不同：mp3/ID3 是 ``APIC:<描述>``（如 ``APIC:`` / ``APIC:cover``），
-# MP4 是 ``covr``，FLAC 的 ``pictures`` 走属性。带后缀的键靠 ``_cover_entry`` 做前缀匹配。
-_COVER_KEYS = ("APIC", "covr", "metadata_block_picture", "pictures")
+# MP4 是 ``covr``，Vorbis/FLAC 是 ``metadata_block_picture``（base64 的 Picture）。
+_COVER_KEYS = ("APIC", "covr", "metadata_block_picture")
 
 
 def _safe_get(audio: Any, key: str) -> Any:
@@ -84,15 +86,27 @@ def _prefixed(audio: Any, key: str, sep: str = "::", *, allow_bare: bool = False
 
 
 def _cover_entry(audio: Any) -> Any:
-    """Return the first embedded picture *frame* without decoding its bytes.
+    """Return the first embedded cover *entry*, or ``None``.
+
+    The entry is whatever the backend stores: an ID3 ``APIC`` frame, an MP4
+    ``MP4Cover``, a base64 ``metadata_block_picture`` string (Vorbis), or a
+    ``Picture`` from FLAC's ``audio.pictures`` list — which is an **attribute**,
+    not a tag key, so it needs its own branch. This is the single source of
+    truth for both "has cover" (``read_tags``) and "give me the bytes"
+    (``embedded_cover``), so the two can never disagree.
 
     Only looks at tag metadata, so checking "has cover" costs no more than
     reading the tags that were already read.
     """
+    pictures = getattr(audio, "pictures", None)  # FLAC：属性，不在 tags 里
+    if pictures:
+        return pictures[0]
+
     for key in _COVER_KEYS:
         value = _safe_get(audio, key)
-        if value is None:
-            # ID3 的封面帧是 ``APIC:<描述>``，描述可能为空，也可能是 ``cover`` 之类
+        if value is None and key == "APIC":
+            # 只有 ID3 的封面帧带描述后缀（``APIC:`` / ``APIC:cover``）；
+            # ``covr`` / ``metadata_block_picture`` 没有这种键，不做前缀匹配
             value = _prefixed(audio, key, ":", allow_bare=True)
         if value is None:
             continue
@@ -100,6 +114,23 @@ def _cover_entry(audio: Any) -> Any:
         if values:
             return values[0]
     return None
+
+
+def _picture_bytes(entry: Any) -> tuple[bytes, str]:
+    """Turn a cover entry into ``(bytes, mime)``; empty bytes mean "no usable picture"."""
+    if isinstance(entry, str):
+        # Vorbis 的 metadata_block_picture 是 base64 过的 FLAC Picture 块
+        try:
+            return _picture_bytes(Picture(base64.b64decode(entry)))
+        except Exception:  # noqa: BLE001 - 坏封面块当成没封面，扫描不能崩
+            return b"", ""
+    data = getattr(entry, "data", entry)
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        return b"", ""
+    data = bytes(data)
+    if not data:
+        return b"", ""
+    return data, _mime_of(entry)
 
 
 def _int_value(text: str | None, *, limit: int = 999) -> int | None:
@@ -143,8 +174,10 @@ def read_tags(path: Path) -> tuple[TrackMetadata, bool, dict[str, Any]]:
         source="tags",
         external_id=str(path),
     )
-    # 判「有没有封面」与取封面（embedded_cover）用同一套键名：能取到就算有。
-    has_cover = _cover_entry(audio) is not None
+    # 判「有没有封面」与取封面（embedded_cover）同一个入口：能取出字节才算有，
+    # 这样两边口径不会分叉（取不出字节的封面在音乐库页也只是占位图）。
+    entry = _cover_entry(audio)
+    has_cover = bool(entry is not None and _picture_bytes(entry)[0])
     info = getattr(audio, "info", None)
     technical = {
         "duration": float(getattr(info, "length", 0) or 0) or None,
@@ -184,17 +217,12 @@ def embedded_cover(path: Path) -> tuple[bytes, str] | None:
         return None
 
     # 与 read_tags 判封面共用 _cover_entry：FLAC 的 ``pictures`` 是属性，
-    # mp3 的 ``APIC:<描述>`` 和 MP4 的 ``covr`` 是标签，两种都覆盖。
-    frame = _cover_entry(audio)
-    if frame is None:
+    # mp3 的 ``APIC:<描述>``、MP4 的 ``covr`` 和 Vorbis 的 ``metadata_block_picture`` 是标签。
+    entry = _cover_entry(audio)
+    if entry is None:
         return None
-    data = getattr(frame, "data", None)
-    if data is None:
-        data = frame
-    data = bytes(data) if isinstance(data, (bytes, bytearray)) else b""
-    if not data:
-        return None
-    return data, _mime_of(frame)
+    data, mime = _picture_bytes(entry)
+    return (data, mime) if data else None
 
 
 def _mime_of(frame: Any) -> str:

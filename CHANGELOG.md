@@ -2,7 +2,13 @@
 
 ### 修复
 
-- **内嵌封面的 mp3 不再被误判为「没有封面」**（只改 `musicpilot/adapters/scanner.py`，接口与前端未动）。mutagen 读 ID3 时封面帧的键名是 `APIC:<描述>`（空描述时就是 `APIC:`），而 `read_tags()` 判封面用的是精确键 `"APIC"`，永远取不到，于是 `has_cover=False`；同一个文件的 `embedded_cover()` 却查的是 `APIC:`，能取到封面。现在判封面与取封面共用 `_cover_entry()`（精确键 + `<键>:<后缀>` 前缀匹配，FLAC 的 `pictures` 与 MP4 的 `covr` 原样保留），能取到就算有。不额外读文件、不把封面字节搬进内存。修完后 `/api/library` 的 `stats.with_cover`、音乐库页与概览页的「有封面」计数会变多（是修正，不是回归），「待补全」也会相应变少。
+- **FLAC 内嵌封面不再被判成「没有封面」，封面也重新取得到**（只改 `musicpilot/adapters/scanner.py`）。
+  - 一直靠 `getattr(audio, "pictures")` 才能判对的 FLAC 封面，在把判封面收口到标签键之后全部漏判：FLAC 的封面在 `audio.pictures` **属性**上，不在标签字典里，`audio.get("pictures")` 永远是 `None`；`embedded_cover()` 换成同一个入口后连封面字节也一起取不出来（音乐库页显示占位图）。
+  - 现在 `_cover_entry()` 先走 `audio.pictures`（FLAC），再查标签键：`APIC`（含 `APIC:` / `APIC:cover` 这类带描述的帧，修 mp3 内嵌封面误判）、`covr`（mp4/m4a）、`metadata_block_picture`（ogg/opus，base64 的 FLAC Picture 块，顺手解出字节与 mime）。
+  - 前缀匹配只用于 ID3 的 `APIC:`；`covr` / `metadata_block_picture` 没有 `<键>:<后缀>` 这种键，不再对它们做无意义匹配。
+  - 判封面与取封面仍是同一个入口：`read_tags()` 的 `has_cover` 以「抽得出非空字节」为准，所以「判有封面」与「`embedded_cover()` 取得到」不会再分叉。
+  - 回归测试覆盖：带 `APIC:` 的 mp3、带 `pictures` 的 flac、mp4 的 `covr`、ogg 的 `metadata_block_picture`，以及无封面文件；`tests/audiofiles.py` 补了能读能写的 flac / ogg / m4a 夹具。
+  - 修完后 `/api/library` 的 `stats.with_cover` 与音乐库页「有封面」计数会回升，「待补全」相应变少。
 
 ### 变更
 
@@ -74,3 +80,4 @@
 
 - 封面代理白名单补充 QQ音乐、酷狗、酷我的图片域名。
 - 设置页在线音源勾选项与封面 / 歌词来源说明同步更新。
+
