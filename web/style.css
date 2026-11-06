@@ -427,7 +427,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 /* 负外边距铺满的「行内项目」：项目多分到半条缝（内容盒），
  * 卡片自己再吃掉这半条缝，于是两张卡的描边正好隔一条缝、两端顶齐，四周不留白。 */
 .dash-row {
-  display: flex; flex-wrap: wrap; align-items: stretch;
+  display: flex; flex-wrap: wrap; align-items: flex-start;
   margin: 0 calc(var(--gap) / -2); min-width: 0;
 }
 .dash-row > * {
@@ -452,6 +452,8 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .dash-row-7-5 > .dash-recent, .dash-row-7-5 > .dash-done { --col: 5 1 340px; }
 .dash-quick > .quick-tile { --col: 1 1 160px; }
 .dash-row-counts > .dash-count { --col: 1 1 220px; }
+/* 计数卡是同一组指标，仍按行内最高的一张拉齐；其余行按内容高度收口 */
+.dash-row-counts, .dash-quick { align-items: stretch; }
 /* 放不下时整行一起折成上下两行，不留半行 */
 @media (max-width: 1180px) {
   .dash-row-7-5 > .dash-library, .dash-row-7-5 > .dash-jobs { --col: 1 1 460px; }
@@ -495,6 +497,19 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .dash-rate-head b { font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button); }
 .dash-rate-bar { height: 8px; }
 .dash-rate-note { font-size: var(--fs-footnote); color: var(--text-3); }
+/* 最常缺的字段：库概览下半部分真实数据，替代原来那块空白 */
+.dash-missing { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.dash-missing-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.dash-missing-item {
+  display: inline-flex; align-items: baseline; gap: 8px;
+  padding: 6px 10px; border-radius: var(--radius-item);
+  background: var(--surface-2); font-size: var(--fs-small); color: var(--text-2);
+}
+.dash-missing-item b {
+  font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button);
+  color: var(--text);
+}
+.dash-missing-empty { font-size: var(--fs-small); color: var(--text-3); }
 .dash-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--divider);
@@ -1845,25 +1860,25 @@ body.editor-open { overflow: hidden; } /* 编辑器自己滚，背后的列表�
   /* 左栏整体缩成上面的信息条：自身可滚，绝不压到下面的 Tab 区 */
   .me-side {
     overflow-y: auto;
-    max-height: 44vh;
+    max-height: 46vh;
     border-right: 0; border-bottom: 1px solid var(--divider);
     padding: 12px 14px;
     display: grid;
-    grid-template-columns: 84px minmax(0, 1fr);
+    /* 封面那一列跟着封面走：最窄 140px，宽屏下最多 160px，剩下的全给文字列 */
+    grid-template-columns: min(160px, max(140px, 34vw)) minmax(0, 1fr);
     gap: 8px 14px;
     align-items: start;
   }
-  .me-cover { width: 84px; max-width: 84px; }
+  /* 封面保持 140–160px 的方形，居中；contain 保证不裁切 */
+  .me-cover { width: 100%; max-width: 160px; margin: 0 auto; }
   .me-side-names { grid-column: 2; }
   .me-complete .lib-ring { --ring-size: 42px !important; }
-  /* 完整度并到圆环右边那一行，别把「信息完整度」挤成竖排 */
-  .me-side-block { padding-left: 98px; }
-  .me-side-block .me-complete { margin-left: -98px; }
+  /* 完整度留在封面右边那一列：圆环与文字横排，不再用负外边距回拉，避免压到封面上 */
+  .me-side-block .me-complete { margin-left: 0; }
   .me-complete-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .me-facts { flex-direction: row; flex-wrap: wrap; gap: 4px 16px; }
   .me-fact { flex: 0 0 auto; gap: 6px; }
-  .me-cover { margin: 0; }
-  .me-cover-fallback .icon { width: 24px; height: 24px; }
+  .me-cover-fallback .icon { width: 28px; height: 28px; }
   .me-side-names { text-align: left; }
   .me-side-block { grid-column: 1 / -1; }
   .me-side-block { gap: 6px; }

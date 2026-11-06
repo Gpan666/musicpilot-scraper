@@ -140,13 +140,58 @@ function jobNote(job) {
   return parts.join(' · ');
 }
 
+/* ---------------- 请求与中断 ---------------- */
+/* 切页 / 重画时会有一批请求还在飞，响应回来已经没人要了：浏览器把它们记成
+ * ERR_CONNECTION_RESET / ERR_ABORTED，控制台一片红。这里给每个请求挂上发起它的
+ * 「槽位」，换槽位时主动 abort 上一批，并把它当成正常取消（不弹 toast、不写错误态）。 */
+const REQUEST_SLOTS = new Map();
+let requestSlot = 'boot';
+class RequestAborted extends Error {
+  constructor() { super('请求已取消'); this.name = 'AbortError'; }
+}
+function abortSlot(slot) {
+  const controllers = REQUEST_SLOTS.get(slot);
+  if (!controllers) return;
+  REQUEST_SLOTS.delete(slot);
+  controllers.forEach((controller) => controller.abort());
+}
+/** 换一批请求：上一批还没回来的先取消，之后的 request() 都归到新槽位。 */
+function switchRequestSlot(slot) {
+  if (slot === requestSlot) return;
+  abortSlot(requestSlot);
+  requestSlot = slot;
+}
+function abortAllRequests() {
+  [...REQUEST_SLOTS.keys()].forEach(abortSlot);
+}
+const isAbortError = (error) => error instanceof RequestAborted
+  || error?.name === 'AbortError' || error?.code === 20;
+
 async function api(path, options = {}) {
   const init = { credentials: 'same-origin', ...options };
+  const slot = init.slot || requestSlot;
+  delete init.slot;
+  const controller = new AbortController();
+  const batch = REQUEST_SLOTS.get(slot) || new Set();
+  batch.add(controller);
+  REQUEST_SLOTS.set(slot, batch);
+  init.signal = controller.signal;
   if (init.body && typeof init.body !== 'string') {
     init.headers = { ...(init.headers || {}), 'Content-Type': 'application/json' };
     init.body = JSON.stringify(init.body);
   }
-  const response = await fetch(path, init);
+  let response;
+  try {
+    response = await fetch(path, init);
+  } catch (error) {
+    if (isAbortError(error)) throw new RequestAborted();
+    throw error;
+  } finally {
+    batch.delete(controller);
+    if (!batch.size && REQUEST_SLOTS.get(slot) === batch) REQUEST_SLOTS.delete(slot);
+  }
+  // 响应头到了、响应体还在读的时候被取消，也要落进取消分支（fetch 这时已经 resolve）
+  if (init.signal.aborted) throw new RequestAborted();
   if (response.status === 401) {
     state.auth.authenticated = false;
     showAuth(state.auth.needs_setup ? 'register' : 'login');
@@ -162,7 +207,12 @@ async function api(path, options = {}) {
   }
   if (response.status === 204) return null;
   const type = response.headers.get('content-type') || '';
-  return type.includes('application/json') ? response.json() : response.text();
+  try {
+    return type.includes('application/json') ? await response.json() : await response.text();
+  } catch (error) {
+    if (isAbortError(error)) throw new RequestAborted();
+    throw error;
+  }
 }
 
 function toast(message, bad = false) {
@@ -234,6 +284,7 @@ async function refreshAuth() {
   return state.auth;
 }
 async function enterApp() {
+  switchRequestSlot('app');
   hideAuth();
   await Promise.all([loadSettings(), loadModes(), loadWatch()]);
   try {
@@ -285,6 +336,8 @@ function renderNav() {
 }
 function go(page) {
   state.page = page;
+  // 上一页还在飞的请求没人要了：先取消，控制台才不会冒出 ERR_CONNECTION_RESET
+  switchRequestSlot(`page:${page}`);
   renderNav();
   if (window.matchMedia('(max-width: 900px)').matches) {
     $('app-shell').classList.remove('nav-open');
@@ -381,6 +434,8 @@ function renderPage() {
     dashboard: renderDashboard, library: renderLibrary, files: renderFiles, plan: renderPlan,
     jobs: renderJobs, settings: renderSettings, docs: renderDocs,
   };
+  // 同一页重画也算新的一批：换槽位时把上一批没回来的请求取消掉
+  switchRequestSlot(`paint:${state.page}`);
   (renderers[state.page] || renderDashboard)();
 }
 function capabilityBadge(item) {
@@ -499,7 +554,7 @@ async function renderDashboard() {
             ${emptyBlock('i-library', '音乐库统计读取失败')}
             <p class="small muted dash-empty-note">${esc(libError)}</p>
             <button class="ghost-btn small dash-retry" id="dash-retry">重新读取</button>`
-            : dashLibraryHtml(stats)}
+            : dashLibraryHtml(stats, tracks)}
         </div>
         <div class="panel dash-recent" id="dash-recent">
           <div class="panel-head"><div><h2>最近入库</h2>
@@ -563,15 +618,27 @@ function dashSourceCard(sources) {
 
 const DASH_RECENT_LIMIT = 6;
 
-/** 概览的库统计：三个数字 + 封面 / 歌词覆盖率进度条 + 待补全入口。数据全部来自 /api/library。 */
-function dashLibraryHtml(stats) {
+/** 出现次数最多的前 3 个缺失字段，数据只来自 /api/library 的 tracks[].missing。 */
+function dashMissingTop(tracks) {
+  const counter = new Map();
+  (tracks || []).forEach((track) => {
+    (track.missing || []).forEach((field) => {
+      counter.set(field, (counter.get(field) || 0) + 1);
+    });
+  });
+  return [...counter.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 3)
+    .map(([field, count]) => ({ label: fieldName(field), count }));
+}
+
+/** 概览的库统计：数字行 + 四项覆盖率 + 最常缺字段 + 待补全入口。数据全部来自 /api/library。 */
+function dashLibraryHtml(stats, tracks = []) {
   const total = Number(stats.tracks) || 0;
   const covers = Number(stats.with_cover) || 0;
   const lyrics = Number(stats.with_lyrics) || 0;
   const incomplete = Number(stats.incomplete) || 0;
   const pct = (value) => (total ? Math.round((100 * value) / total) : null);
-  const coverRate = pct(covers);
-  const lyricRate = pct(lyrics);
   const numbers = [
     ['曲目', total], ['专辑', Number(stats.albums) || 0], ['歌手', Number(stats.artists) || 0],
   ].map(([label, value]) => `
@@ -584,11 +651,21 @@ function dashLibraryHtml(stats) {
       <div class="progress dash-rate-bar"><span class="${dashRateTone(rate)}" style="width:${rate === null ? 0 : rate}%"></span></div>
       <div class="dash-rate-note">${total ? `${value} / ${total} 首` : '—'}</div>
     </div>`;
+  const top = dashMissingTop(tracks);
   return `
     <div class="dash-numbers">${numbers}</div>
     <div class="dash-rates">
-      ${bar('有封面', covers, coverRate)}
-      ${bar('有歌词', lyrics, lyricRate)}
+      ${bar('缺封面', Math.max(total - covers, 0), pct(Math.max(total - covers, 0)))}
+      ${bar('缺歌词', Math.max(total - lyrics, 0), pct(Math.max(total - lyrics, 0)))}
+      ${bar('待补全占比', incomplete, pct(Math.min(incomplete, total)))}
+      ${bar('有封面', covers, pct(covers))}
+    </div>
+    <div class="dash-missing">
+      <span class="field-label">最常缺的字段</span>
+      ${top.length
+        ? `<div class="dash-missing-list">${top.map((item) => `
+          <span class="dash-missing-item">${esc(item.label)}<b>${esc(String(item.count))}</b></span>`).join('')}</div>`
+        : '<p class="dash-missing-empty">没有缺字段的曲目</p>'}
     </div>
     <div class="dash-foot">
       <span class="dash-pending">待补全 <b class="${incomplete ? 'warn' : 'ok'}">${esc(String(incomplete))}</b> 首</span>
@@ -2948,5 +3025,15 @@ document.addEventListener('keydown', (event) => {
 });
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
   if (themePreference() === 'auto') applyTheme('auto');
+});
+// 离开页面 / 切到后台：把在飞的请求主动收掉，别留给浏览器判成连接被重置
+window.addEventListener('pagehide', abortAllRequests);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') abortAllRequests();
+});
+// 兜底：任何没被接住的拒绝都不该变成控制台里的红色报错
+window.addEventListener('unhandledrejection', (event) => {
+  if (!isAbortError(event.reason)) return;
+  event.preventDefault();
 });
 boot();
