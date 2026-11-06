@@ -346,6 +346,11 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
   grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   align-items: start;
 }
+/* 等分变体：列数只取 1 / 2，与页面的对称规则保持一致 */
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 620px) {
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+}
 .bento {
   display: grid;
   gap: var(--gap);
@@ -393,7 +398,6 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
   font-variation-settings: 'wght' var(--wght-display);
   line-height: 1.1;
 }
-.stat-panel { display: flex; flex-direction: column; justify-content: space-between; min-height: 118px; }
 /* 面板头里的按钮组不允许被标题挤成两行：标题先让位，按钮保持一行 */
 .panel-head > div:first-child { min-width: 0; flex: 1 1 auto; }
 /* 中等宽度下按钮组会占掉半行，这时整段换行比把中文标题挤成「可用 / 性」更好读 */
@@ -420,35 +424,94 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .mini-sub { font-size: var(--fs-footnote); color: var(--text-3); overflow-wrap: anywhere; }
 .mini-side { flex: none; display: flex; align-items: center; gap: 8px; font-size: var(--fs-footnote); color: var(--text-3); }
 
-/* ---------- 概览：快捷入口 + 音乐库概览 + 最近入库 ---------- */
+/* 单列页面堆叠：页内每一块都整行铺满，天然对称 */
+.page-stack { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+/* 空态容器：面板只包一条空态条，不留大块内边距 */
+.panel-tight { padding: clamp(12px, 1.2vw, 16px); }
+/* 整行紧凑操作条：左边标题与开关，右边操作按钮，一行放完，高度压在 100 以内 */
+.action-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px 20px;
+  padding-block: 14px;
+}
+.action-bar-main { min-width: 0; flex: 1 1 420px; }
+.action-bar-main h2 { font-size: var(--fs-headline); }
+.action-bar-opts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 4px; }
+.action-bar-opts .check-line { padding: 2px 0; }
+.action-bar-btns { flex: none; }
+@media (max-width: 900px) {
+  .action-bar-btns { flex: 1 1 100%; }
+}
+
+/* ---------- 设置两页：整行 + 2 等分等高网格 ---------- */
+.settings-board { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+/* 刮削设置：2×2 等宽等高；同行卡片用同一行轨道，高度差为 0 */
+.settings-grid {
+  display: grid; gap: var(--gap);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+}
+.settings-cell { display: flex; flex-direction: column; min-width: 0; }
+.settings-cell > h2 { margin-bottom: 8px; }
+.settings-cell .cell-note { margin-top: auto; padding-top: 10px; }
+@media (max-width: 900px) { .settings-grid { grid-template-columns: minmax(0, 1fr); } }
+/* 整行紧凑保存条：文字在左、按钮在右，高度不超过 72 */
+.save-bar {
+  display: flex !important; flex-direction: row; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px 20px; padding-block: 12px;
+}
+.save-bar-text { min-width: 0; }
+.save-bar-text h3 { font-size: var(--fs-body); }
+.save-bar-text p { margin-top: 2px; }
+.save-bar .primary-btn { flex: none; padding-block: 9px; }
+/* 窄屏只留标题 + 按钮：说明文字收起，保存条高度继续压在 72 以内 */
+@media (max-width: 620px) {
+  .save-bar-text p { display: none; }
+}
+/* 目录这类小面板：标题与字段更紧，整块高度压得住 */
+.panel-compact { padding: clamp(12px, 1.1vw, 14px) clamp(16px, 1.6vw, 22px); }
+.panel-head.compact { margin-bottom: 8px; }
+.panel-head.compact h2 { font-size: var(--fs-headline); }
+.panel-head.compact p { margin-top: 2px; }
+.fields-row { gap: var(--gap); }
+.fields-row .field { margin-bottom: 0; gap: 4px; }
+.fields-row .field input { padding-block: 8px; }
+
+/* ---------- 概览：4 等分快捷磁贴 + 两行 2 等分面板 ---------- */
 /* 版面用 CSS Grid 显式分栏：间隔由 gap 产生，卡片自己是 border-box，
- * 边框与背景永远不会越出自己的格子，相邻两张卡也不会叠在一起。 */
+ * 边框与背景永远不会越出自己的格子，相邻两张卡也不会叠在一起。
+ * 每行只有一种列宽（1 / 2 / 4 等分），同行 align-items:stretch 保证等高。 */
 .dash-board { display: flex; flex-direction: column; gap: var(--gap); }
 .dash-row {
-  display: grid; gap: var(--gap); align-items: start;
+  display: grid; gap: var(--gap); align-items: stretch;
   min-width: 0; grid-template-columns: minmax(0, 1fr);
 }
 /* 行内卡片内部仍是纵向流：头部一行，下面各段自上而下排 */
-.dash-row > .panel { display: flex; flex-direction: column; }
-/* 常见分栏：7:5 是「宽卡 + 侧卡」，快捷磁贴与计数卡等宽 */
-.dash-row-7-5 { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
-.dash-quick { grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; }
-/* 计数卡：有元数据来源时两张平分，一个都没有时那张单独铺满，不留半行空洞 */
-.dash-row-counts { grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); align-items: stretch; }
-/* 断点：≤1180 时 7-5 等比两列；≤900 / ≤620 全部单列。
- * 快捷磁贴窄屏改回弹性行：5 个磁贴折行后由 flex-grow 把每一行撑满，
- * 不会像定列栅格那样在最后一行留半行空洞。 */
+.dash-row > .panel { display: flex; flex-direction: column; min-width: 0; }
+/* 同行把卡片拉到等高后，空态条在剩余空间里居中，不在顶部留一块死白；单列不拉伸 */
+@media (min-width: 901px) {
+  .dash-row > .panel > .empty-bar { margin-block: auto; }
+}
+/* 4 等分（快捷磁贴）与 2 等分（面板对）两种行宽，没有 7:5、没有 5 列 */
+.dash-quick { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.dash-row-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* 断点按 4 → 2 → 1 递减收列，任何一档都不留半行空洞：
+ * ≤1180 快捷磁贴 4→2，面板行仍 2 等分（同行列数相等）；≤900 面板行落单列；≤620 磁贴也落单列。 */
 @media (max-width: 1180px) {
-  .dash-row-7-5 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .dash-quick { display: flex; flex-wrap: wrap; }
-  .dash-quick > .quick-tile { flex: 1 1 150px; }
+  .dash-quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
-  .dash-row-7-5, .dash-quick, .dash-row-counts { grid-template-columns: minmax(0, 1fr); }
+  .dash-row-2 { grid-template-columns: minmax(0, 1fr); }
 }
+@media (max-width: 620px) {
+  .dash-quick { grid-template-columns: minmax(0, 1fr); }
+}
+/* 快捷磁贴：图标 + 一行文字，整卡高度压到 80 以内。
+ * 行内卡片默认是纵向流（.dash-row > .panel），这里按磁贴改回横排。 */
+.dash-row > .quick-tile { flex-direction: row; align-items: center; }
 .quick-tile {
   display: flex; align-items: center; gap: 10px;
-  min-height: 0; padding: 14px;
+  min-height: 0; padding: 12px 14px;
   font-family: inherit; text-align: left; color: var(--text);
   cursor: pointer;
   transition: border-color var(--transition), transform var(--transition), background var(--transition);
@@ -457,57 +520,55 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .quick-tile:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .quick-icon {
   flex: none; display: grid; place-items: center;
-  width: 40px; height: 40px; border-radius: 13px;
+  width: 34px; height: 34px; border-radius: 12px;
   background: var(--primary-soft); color: var(--primary-soft-text);
 }
-.quick-icon .icon { width: 21px; height: 21px; }
+.quick-icon .icon { width: 19px; height: 19px; }
 .quick-label {
   flex: 1; min-width: 0; font-size: var(--fs-body);
   font-weight: var(--wght-heading); font-variation-settings: 'wght' var(--wght-heading);
   overflow-wrap: anywhere;
 }
-/* 计数卡里的进度条贴到底部，和数字、说明连成一条 */
-.dash-count-bar { height: 8px; margin: 2px 0; }
-
-/* 库概览的统计数字一排三个，窄屏自动落成一行 */
-.dash-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-.dash-number { min-width: 0; padding: 10px 12px; border-radius: var(--radius-item); background: var(--surface-2); }
+/* 库状态速览的三个数字：等分三格，跟着面板宽度伸缩。
+ * 面板被同行拉伸时，这三格吃掉多出来的高度，空出来的地方不留白。 */
+.dash-library { display: flex; flex-direction: column; }
+.dash-numbers {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px;
+}
+.dash-number {
+  min-width: 0; padding: 10px 12px; border-radius: var(--radius-item); background: var(--surface-2);
+  display: flex; flex-direction: column; justify-content: center;
+}
 .dash-number-value {
   font-size: clamp(22px, 1.4vw + 16px, 30px);
   font-weight: var(--wght-display); font-variation-settings: 'wght' var(--wght-display);
   line-height: 1.15;
 }
 .dash-number-label { font-size: var(--fs-footnote); color: var(--text-3); margin-top: 2px; }
-.dash-rates { display: grid; gap: 12px; }
 .dash-rate { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .dash-rate-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: var(--fs-small); }
 .dash-rate-head b { font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button); }
 .dash-rate-bar { height: 8px; }
 .dash-rate-note { font-size: var(--fs-footnote); color: var(--text-3); }
-/* 最常缺的字段：库概览下半部分真实数据，替代原来那块空白 */
-.dash-missing { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
-.dash-missing-list { display: flex; flex-wrap: wrap; gap: 8px; }
-.dash-missing-item {
-  display: inline-flex; align-items: baseline; gap: 8px;
-  padding: 6px 10px; border-radius: var(--radius-item);
-  background: var(--surface-2); font-size: var(--fs-small); color: var(--text-2);
-}
-.dash-missing-item b {
-  font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button);
-  color: var(--text);
-}
-.dash-missing-empty { font-size: var(--fs-small); color: var(--text-3); }
+/* 速览底部：待补全数量与入口贴在卡片下沿，面板被同行拉伸时也不会飘在半空 */
 .dash-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--divider);
+  margin-top: auto; padding-top: 14px; border-top: 1px solid var(--divider);
 }
 .dash-pending { font-size: var(--fs-small); color: var(--text-2); }
 .dash-pending b { font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button); }
 .dash-pending b.ok { color: var(--ok); }
 .dash-pending b.warn { color: var(--warn); }
-.dash-empty-note { margin-top: 10px; text-align: center; overflow-wrap: anywhere; }
-.dash-retry { align-self: center; margin-top: 10px; }
-/* 最近入库：32px 方形封面（外层带底色，无封面 / 加载失败时碟片占位就是全部） */
+.dash-empty-note { margin-top: 10px; overflow-wrap: anywhere; }
+.dash-retry { align-self: flex-start; margin-top: 10px; }
+/* 宽屏下两卡等高：列表定高 4 条迷你行，多出来的自己滚，不把整行拉长、也不靠留白撑。
+ * 单列（≤900）时没有「同行等高」这回事，列表回到自然高度，不会被切一半。 */
+.dash-list::-webkit-scrollbar { width: 6px; }
+.dash-list::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: var(--radius-pill); }
+.dash-list::-webkit-scrollbar-track { background: transparent; }
+@media (min-width: 901px) {
+  .dash-list { max-height: 248px; overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+}
 .dash-thumb {
   flex: none; position: relative; display: grid; place-items: center;
   width: 32px; height: 32px; border-radius: 9px; overflow: hidden;
@@ -709,10 +770,25 @@ td.empty {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   padding: 22px 12px !important; white-space: nowrap;
 }
+/* 任务表空态：文案不换行、不被 flex 挤压，图标与文字始终并排居中（只作用于任务表） */
+.jobs-table td.empty { padding-block: 20px !important; text-align: center; }
+.jobs-table td.empty .empty-text { flex: none; white-space: nowrap; }
 .empty-inline { flex: none; display: grid; place-items: center; width: 20px; height: 20px; opacity: .45; }
 .empty-inline .icon { width: 20px; height: 20px; }
 td.empty .empty-text { display: inline; }
 .empty-action { justify-content: center; margin-top: 4px; }
+/* 紧凑空态条：一行排完（图标 + 文案 + 按钮），整块高度压在 120 以内 */
+.empty-bar {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 52px; padding: 14px 16px;
+  border-radius: var(--radius-item); background: var(--surface-2);
+  color: var(--text-2);
+}
+.empty-bar .empty-text { flex: 1; min-width: 0; font-size: var(--fs-small); overflow-wrap: anywhere; }
+.empty-bar .ghost-btn { flex: none; }
+@media (max-width: 620px) {
+  .empty-bar { flex-wrap: wrap; }
+}
 /* 任务明细：文件名与所在目录各占一行，长路径只压缩中间，首尾都看得见。 */
 /* 明细表列多且含双行路径，给一个下限，窄屏靠容器横向滚动而不是把字挤成竖排 */
 .items-table { min-width: 720px; }
@@ -782,7 +858,6 @@ td.empty .empty-text { display: inline; }
 .mode-card:hover { transform: translateY(-2px); }
 .mode-card.selected { border-color: var(--primary); background: var(--primary-soft); }
 .mode-card h3 { font-size: var(--fs-headline); }
-.mode-en { font-size: var(--fs-tiny); color: var(--text-3); margin: 2px 0 8px; }
 .mode-card p { font-size: var(--fs-small); color: var(--text-2); min-height: 3.2em; }
 .mode-tag { margin-top: 10px; font-size: var(--fs-footnote); color: var(--primary-soft-text); }
 .doc-block { padding: 18px; border-radius: var(--radius-item); background: var(--surface-2); border: 1px solid var(--outline); }
@@ -791,6 +866,10 @@ td.empty .empty-text { display: inline; }
 .doc-block p { font-size: var(--fs-small); margin-bottom: 12px; }
 .doc-block ul { margin: 6px 0 12px; padding-left: 20px; font-size: var(--fs-small); color: var(--text-2); }
 .doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; font-size: var(--fs-small); color: var(--text-2); }
+/* docs 四种方式：2×2 等宽等高（2 列 → 1 列），每格半行宽，正文不再断成窄条 */
+.doc-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); align-items: stretch; }
+.doc-grid-2 > .doc-block { display: flex; flex-direction: column; min-width: 0; }
+@media (max-width: 900px) { .doc-grid-2 { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 1080px) { .doc-grid { grid-template-columns: 1fr; } }
 
 /* ---------- overlays / dialogs ---------- */
@@ -935,10 +1014,16 @@ td.empty .empty-text { display: inline; }
 .plan-stat.ok b { color: var(--ok); }
 .plan-stat.warn b { color: var(--warn); }
 .plan-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: var(--gap); }
-/* 一张计划卡要放下「封面 + 双行路径 + 原值→新值 + 候选」，360 起步才不至于把 diff 列压扁；
- * 卡片模式下 auto-fill 最少两列，宽屏自动均分成 2/3/4 列，右侧不会被留空。 */
-.plan-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); }
-.plan-grid-cards { grid-template-columns: repeat(auto-fill, minmax(max(360px, calc(50% - 6px)), 1fr)); }
+/* 计划卡：卡片视图固定 2 等分（窄屏 1 列），同行强制等高；
+ * 条目数为奇数时最后一张铺满整行，不留「半宽孤卡 + 右半边空」。 */
+.plan-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); align-items: stretch; }
+.plan-grid-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.plan-grid-cards > .plan-card { min-width: 0; }
+.plan-grid-cards > .plan-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+@media (max-width: 900px) {
+  .plan-grid-cards { grid-template-columns: minmax(0, 1fr); }
+  .plan-grid-cards > .plan-card:last-child:nth-child(odd) { grid-column: auto; }
+}
 @media (max-width: 520px) {
   .plan-grid, .plan-grid-cards { grid-template-columns: 1fr; }
   .plan-card { flex-direction: column; }
