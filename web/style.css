@@ -1879,33 +1879,207 @@ body.editor-open { overflow: hidden; } /* 编辑器自己滚，背后的列表�
 .me-scrape-bar { align-items: center; }
 .me-scrape .scrape-results { margin-top: 2px; }
 
-/* 歌词 */
-.me-lyrics { display: flex; flex-direction: column; gap: 14px; height: 100%; }
-.me-lyrics-note { line-height: 1.6; }
-.me-lyrics-preview-wrap, .me-lyrics-edit { display: flex; flex-direction: column; min-width: 0; }
-.me-lyrics-preview {
-  max-height: 42vh; overflow: auto;
-  padding: 12px 14px; border-radius: var(--radius-item); background: var(--surface-2);
-  display: flex; flex-direction: column; gap: 2px;
+/* 歌词：左「同步渲染预览」+ 右「歌词编辑区」，两栏 1:1 等宽等高，各自独立滚动。
+ * 宽度按容器而不是视口判断：编辑器宽度 ≈ min(92vw, 1360px)，所以 1000px 断点
+ * 对应约 1087px 的视口，正好落在 #49 的对称总原则里。 */
+.me-body[data-tab='lyrics'] {
+  overflow: hidden;                /* 滚动交给两栏自己，外层不滚才不会出现双滚动条 */
+  padding: 12px 16px 14px;
 }
-.me-lrc-line { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 10px; font-size: var(--fs-small); line-height: 1.7; }
-.me-lrc-line.blank { opacity: .5; }
-.me-lrc-time { color: var(--text-3); font-size: var(--fs-footnote); }
-.me-lyrics-raw {
-  margin: 0; max-height: 42vh; overflow: auto;
-  padding: 12px 14px; border-radius: var(--radius-item); background: var(--surface-2);
-  color: var(--text-2); font-family: inherit; font-size: var(--fs-small); line-height: 1.7;
-  white-space: pre-wrap; overflow-wrap: anywhere;
+.me-lyrics-shell {
+  height: 100%; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: stretch;
+  position: relative;
 }
-.me-lyrics-input {
-  min-height: 200px; max-height: 46vh;
+.me-lpane {
+  min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--divider);
+  border-radius: var(--radius-item);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.me-lpane-head {
+  flex: none;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--surface);
+  min-width: 0;
+}
+.me-lpane-title {
+  flex: none;
+  font-size: var(--fs-small);
+  font-weight: var(--wght-heading);
+  font-variation-settings: 'wght' var(--wght-heading);
+  white-space: nowrap;
+}
+.me-lpane-badge { flex: none; }
+.me-lsrc-open { flex: none; }
+.me-lpane-tools { flex: none; margin-left: auto; gap: 6px; flex-wrap: nowrap; }
+.me-lpane-tools .ghost-btn { display: inline-flex; align-items: center; gap: 5px; }
+.me-lpane-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 18px 22px; }
+.me-lpane-foot {
+  flex: none;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--divider);
+  background: var(--surface);
+  min-width: 0;
+}
+/* 底部状态栏：左边光标行列，中间行数靠右，最右「保存歌词」 */
+.me-edit-foot > .small.mono { flex: none; }
+.me-edit-foot > .small:not(.mono) { flex: none; margin-left: auto; }
+.me-edit-foot .primary-btn { flex: none; }
+/* 只在歌词 Tab 里把主按钮收小，别的 Tab（智能刮削的「写入标签」）保持原样 */
+.me-lpane .primary-btn, .me-lsrc .primary-btn { padding: 6px 15px; font-size: var(--fs-small); box-shadow: none; }
+
+/* 左栏：逐行居中大字、宽行距；时间戳已剥掉，命中行高亮 */
+.me-lrc-line {
+  font-size: var(--fs-body);
+  line-height: 2.05;
+  text-align: center;
+  padding: 0 6px;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.me-lrc-line.blank { height: 0.9em; }
+.me-lrc-line.hit { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.me-lrc-line.hit.current { background: color-mix(in srgb, var(--warn) 26%, transparent); }
+.me-lrc-line mark {
+  background: color-mix(in srgb, var(--warn) 52%, transparent);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0 1px;
+}
+.me-lpane-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  padding: 26px 12px;                /* 紧凑空态：贴顶部一小块，不在整栏里高空留白 */
+  color: var(--text-3); text-align: center;
+}
+.me-lpane-empty-icon { width: 30px; height: 30px; opacity: .45; display: grid; place-items: center; }
+.me-lpane-empty-icon .icon { width: 30px; height: 30px; }
+.me-lpane-empty-text { margin: 0; font-size: var(--fs-small); }
+
+/* 左栏头部搜索：放大镜 + 输入 + 命中计数 + 上/下一处，一行排完 */
+.me-find {
+  flex: 1 1 140px; min-width: 0;
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 4px 2px 9px;
+  border: 1px solid var(--outline);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+}
+.me-find:focus-within { border-color: var(--primary); }
+.me-find-icon { flex: none; display: grid; place-items: center; color: var(--text-3); }
+.me-find-icon .icon { width: 15px; height: 15px; }
+.me-find-input {
+  flex: 1 1 auto; min-width: 0;
+  border: 0; outline: none; background: transparent;
+  color: var(--text); font-family: inherit; font-size: var(--fs-small);
+  padding: 4px 2px;
+}
+.me-find-input::-webkit-search-cancel-button { cursor: pointer; }
+.me-find-count { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.me-find .icon-btn { width: 24px; height: 24px; font-size: var(--fs-tiny); border: 0; background: transparent; }
+.me-find .icon-btn:hover { background: var(--surface-3); }
+
+/* 右栏：行号 gutter + 等宽文本框，行号与文本行一一对应、滚动同步 */
+.me-code {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  background: var(--surface);
+  overflow: hidden;
+}
+.me-code-gutter {
+  min-width: 44px;
+  padding: 12px 8px 12px 10px;
+  overflow: hidden;
+  text-align: right;
+  color: var(--text-3);
+  font-family: var(--mono); font-size: var(--fs-small);
+  line-height: 1.75;
+  background: var(--surface-2);
+  border-right: 1px solid var(--divider);
+  user-select: none;
+}
+.me-code-ln { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.me-code-ln.hit { color: var(--warn); }
+.me-code-ln.current { color: var(--warn); font-weight: var(--wght-button); }
+.me-code-area {
+  min-width: 0; min-height: 0;
   padding: 12px 14px;
-  border: 1px solid var(--outline); border-radius: var(--radius-field);
-  background: var(--surface-2); color: var(--text);
-  font-family: var(--mono); font-size: var(--fs-small); line-height: 1.7;
-  resize: vertical;
+  border: 0; outline: none; resize: none;
+  background: transparent; color: var(--text);
+  font-family: var(--mono); font-size: var(--fs-small);
+  line-height: 1.75;
+  overflow: auto;                  /* 长行走横向滚动，不撑破两栏 */
+  white-space: pre;
+  tab-size: 2;
 }
-.me-lyrics-input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+.me-code-area::placeholder { color: var(--text-3); }
+
+/* 从音源搜词：面板盖在歌词 Tab 内容区上，不新开窗口 */
+.me-lsrc {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 12px;
+  background: color-mix(in srgb, var(--dimming) 72%, transparent);
+}
+.me-lsrc.hidden { display: none; }
+/* 卡片自己定高：标题钉在上面，下面的内容单独滚，滚到底也还看得见关闭按钮 */
+.me-lsrc-card {
+  width: min(100%, 680px); max-height: 100%;
+  display: flex; flex-direction: column;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--outline); border-radius: var(--radius-item);
+  background: var(--surface); box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.me-lsrc-body {
+  flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.me-lsrc-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 10px; }
+.me-lsrc-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 12px; }
+.me-lsrc-form .field { margin-bottom: 0; }
+.me-lsrc-form .field input { font-size: var(--fs-small); padding: 8px 11px; }
+.me-lsrc-bar { align-items: center; }
+.me-lsrc-card .field { margin-bottom: 0; }
+.me-lsrc-list { display: flex; flex-direction: column; gap: 8px; }
+.me-lsrc-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: var(--radius-item);
+  background: var(--surface-2);
+}
+.me-lsrc-item .scrape-main { flex: 1; min-width: 0; }
+.me-lsrc-note { line-height: 1.6; }
+.me-lsrc-foot { line-height: 1.6; }
+
+/* 「编辑器宽 <1000px」按弹窗宽度算：弹窗宽 = min(92vw, 1360px)，
+ * 所以 92vw < 1000px 即视口 < 1087px；视口 <900px 时弹窗变全屏，同样落在这里。
+ * 两栏改上下堆叠，各占 100% 宽、等高不强制，谁都不横向溢出。 */
+@media (max-width: 1087px) {
+  .me-body[data-tab='lyrics'] { overflow-y: auto; padding: 10px 12px 14px; }
+  .me-lyrics-shell {
+    height: auto; min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+  .me-lpane { height: auto; }
+  .me-lpane-scroll { max-height: 46vh; }
+  /* 堆叠时给编辑区一个定高：flex-grow 会盖掉 height，所以这里必须 flex: none */
+  .me-code { flex: none; height: 46vh; min-height: 300px; }
+  .me-lsrc-form { grid-template-columns: minmax(0, 1fr); }
+  .me-find { order: 3; flex-basis: 100%; }
+  .me-lsrc-item { flex-wrap: wrap; }
+  /* 堆叠时外层 body 会滚，面板不能跟着滚走：改成盖住整个视口的居中浮层 */
+  .me-lsrc { position: fixed; inset: 0; z-index: 80; align-items: center; padding: 16px; }
+  .me-lsrc-card { max-height: 100%; }
+}
 
 /* 操作历史 */
 .me-timeline { display: flex; flex-direction: column; gap: 12px; }

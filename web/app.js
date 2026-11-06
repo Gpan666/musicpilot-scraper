@@ -1139,7 +1139,18 @@ function openMediaEditor(path, tab = 'core') {
   if (close) close.focus({ preventScroll: true });
 }
 
+/** 收起三栏里那个搜词面板；返回是否真的收掉了（ESC 先收面板再关编辑器）。 */
+function closeLyricsSourcePanel() {
+  const lyr = editor.path ? editor.lyrics[editor.path] : null;
+  if (!lyr?.select?.open) return false;
+  lyr.select.open = false;
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (box) paintLyricsSource(box, lyr);
+  return true;
+}
+
 function closeMediaEditor() {
+  closeLyricsSourcePanel();
   const node = mediaEditorNode();
   if (node) {
     node.classList.add('hidden');
@@ -1152,6 +1163,8 @@ function closeMediaEditor() {
 
 function switchMediaTab(tab, options = {}) {
   const current = editor.tab || 'core';
+  // 离开歌词 Tab 时把「从音源搜词」面板收起来，下次回来是干净的两栏
+  if (current === 'lyrics' && tab !== 'lyrics') closeLyricsSourcePanel();
   if (options.keepScroll !== false) {
     const oldBody = mediaEditorNode()?.querySelector('[data-me-body]');
     if (oldBody) editor.scrolls[current] = oldBody.scrollTop;
@@ -1268,6 +1281,7 @@ function paintMediaSide() {
 function paintMediaBody(tab) {
   const box = mediaEditorNode()?.querySelector('[data-me-body]');
   if (!box) return;
+  box.dataset.tab = tab;   // 歌词 Tab 的双栏布局按它挂样式，其它 Tab 不受影响
   const track = mediaTrack();
   if (!track) { box.innerHTML = emptyBlock('i-disc', '曲目已不在列表中'); return; }
   if (tab === 'scrape') { paintMediaScrape(track); return; }
@@ -1474,70 +1488,655 @@ async function applyScrapeResult(item, dryRun) {
   } catch (error) { toast(error.message, true); }
 }
 
-/* ---- 歌词：懒加载 detail，LRC 逐行预览 + 原始文本编辑，整体替换 ---- */
+/* ---- 歌词：左「同步渲染预览」+ 右「歌词编辑区」
+ * 本地搜词只作用在前端已加载/已编辑的文本上；音源搜词复用 /api/library/search 与
+ * /api/library/apply（dry_run）探一次「这个来源有没有词」，两条路都不新增后端接口。
+ * 写歌词永远只走 PUT /api/library/lyrics，apply 的标签语义不碰。
+ */
 function mediaLyricsState(path) {
-  if (!editor.lyrics[path]) editor.lyrics[path] = { text: null, loading: false, error: '' };
+  if (!editor.lyrics[path]) {
+    editor.lyrics[path] = {
+      text: null,     // 后端读回来的原文
+      draft: null,    // 编辑区里还没保存的文本；null 表示没动过
+      loading: false,
+      error: '',
+      query: '',
+      hitIndex: 0,
+      select: null,   // 从音源搜词的面板状态
+    };
+  }
   return editor.lyrics[path];
+}
+
+const LRC_STAMP_HEAD = /^\s*(?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\])+/;
+const LRC_STAMPS = /\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]/g;
+const LRC_META_HEAD = /^\s*\[([a-zA-Z]{2,6})\s*:\s*([^\]]*)\]\s*$/;
+// 纯文本的署名行：作词 : 张三 / 作曲：李四 —— 格式化时归组到顶部，不编时间戳
+const LRC_CREDIT = /^\s*(作词|作曲|编曲|制作人|词|曲|演唱|原唱|录音|混音|母带|吉他|贝斯|鼓|键盘|和声|出品|监制|发行|OP|SP|Written by|Composed by|Lyrics by|Produced by)\s*[:：]\s*(.+)$/i;
+const LRC_META_ORDER = ['ti', 'ar', 'al', 'au', 'by', 'offset', 'length', 're', 've'];
+const LYRIC_HINT = '已填入歌词，点保存歌词才会写入文件';
+const LYRIC_NO_SOURCE = '该来源没有提供歌词';
+
+const lyricsDraftText = (lyr) => (lyr.draft === null ? (lyr.text || '') : lyr.draft);
+const lyricsQuery = (lyr) => String(lyr.query || '').trim();
+// 行数只数歌词行：[ti:]/[ar:] 这类头标签算元数据，不算歌词
+const countLyricLines = (text) => lrcPreviewRows(text).filter((row) => !row.blank && !row.meta).length;
+
+/** 预览行：剥掉 [mm:ss.xx] 时间戳、保留空行当段落间隔；非 LRC 纯文本按行原样。
+ * `line` 始终是编辑区里的真实行号，预览、行号列、命中位置才对得上；
+ * `meta` 是 [ti:]/[ar:] 这类 LRC 头标签，只取冒号后的值当元信息行渲染。 */
+function lrcPreviewRows(text) {
+  return String(text ?? '').split(/\r?\n/).map((line, index) => {
+    const body = line.replace(LRC_STAMP_HEAD, '').replace(/\s+$/, '');
+    const meta = body.trim().match(LRC_META_HEAD);
+    // [ti:xxx] 只取冒号后面的值；[ti:] 这种空标签直接当空行，不占版面
+    const text = meta ? meta[2].trim() : body;
+    return {
+      line: index,
+      text,
+      blank: !text.trim(),
+      meta: !!meta && !!text.trim(),
+    };
+  });
+}
+
+/** 末尾的空行不算段落间隔，预览里去掉，免得右下角凭空多一段留白。 */
+function trimTrailingBlanks(rows) {
+  let end = rows.length;
+  while (end > 0 && rows[end - 1].blank) end -= 1;
+  return rows.slice(0, end);
+}
+
+/** 命中行号。预览与行号列共用同一份，索引天然对齐；
+ * 行号列多传 includeMeta，让 [ti:] 这类只在编辑区存在的行也能在右侧看见命中。 */
+function lyricsHitLines(text, query, includeMeta = false) {
+  const needle = String(query ?? '').toLowerCase();
+  if (!needle) return [];
+  return lrcPreviewRows(text)
+    .filter((row) => !row.blank && (includeMeta || !row.meta) && row.text.toLowerCase().includes(needle))
+    .map((row) => row.line);
+}
+
+/** 大小写不敏感的本地命中：返回包了 <mark> 的 HTML，中文子串照样切得开。 */
+function markHits(text, query) {
+  const source = String(text ?? '');
+  const needle = String(query ?? '');
+  if (!needle) return esc(source);
+  const lower = source.toLowerCase();
+  const target = needle.toLowerCase();
+  let out = '';
+  let from = 0;
+  for (;;) {
+    const at = lower.indexOf(target, from);
+    if (at < 0) break;
+    out += esc(source.slice(from, at)) + `<mark>${esc(source.slice(at, at + target.length))}</mark>`;
+    from = at + target.length;
+  }
+  return out + esc(source.slice(from));
 }
 
 function paintMediaLyrics(track) {
   const box = mediaEditorNode()?.querySelector('[data-me-body]');
   if (!box) return;
   const lyr = mediaLyricsState(track.path);
+  if (!lyr.select || lyr.select.path !== track.path) {
+    lyr.select = {
+      path: track.path,
+      open: false,
+      loading: false,
+      busy: -1,
+      results: [],
+      hint: '',
+      form: { title: track.title || '', artist: track.artist || '', album: track.album || '', source: '' },
+    };
+  }
   if (lyr.text === null && !lyr.loading && !lyr.error) loadMediaLyrics(track.path);
-  const text = lyr.text || '';
-  let lines = { isLrc: false, rows: [] };
-  try { lines = parseLrc(text); } catch { lines = { isLrc: false, rows: [] }; }
-  const preview = lyr.loading
-    ? emptyBlock('i-lyrics', '正在读取歌词…')
-    : lyr.error
-      ? emptyBlock('i-lyrics', lyr.error)
-      : (text.trim()
-        ? (lines.isLrc
-          ? `<div class="me-lyrics-preview">${lines.rows.map((row) => `<div class="me-lrc-line${row.text ? '' : ' blank'}">
-              <span class="me-lrc-time mono">${esc(row.stamp)}</span><span>${esc(row.text || ' ')}</span></div>`).join('')}</div>`
-          : `<pre class="me-lyrics-raw">${esc(text)}</pre>`)
-        : emptyBlock('i-lyrics', '该文件没有歌词，可在下方粘贴后保存'));
   box.innerHTML = `
-    <div class="me-lyrics">
-      <div class="me-lyrics-note small muted">
-        歌词是整体替换：保存后文件里的旧歌词会被这段文本覆盖（不受「只补空字段」限制）。
-      </div>
-      <div class="me-lyrics-preview-wrap">
-        <div class="me-block-head">
-          <span class="field-label">歌词预览</span>
-          <span class="badge">${text.trim() ? (lines.isLrc ? 'LRC 时间轴' : '纯文本') : '暂无歌词'}</span>
+    <div class="me-lyrics-shell">
+      <section class="me-lpane me-lpane-preview">
+        <header class="me-lpane-head">
+          <span class="me-lpane-title">同步渲染预览</span>
+          <button class="ghost-btn small me-lsrc-open" type="button" data-lsrc-open>从音源搜词</button>
+          <div class="me-find">
+            <span class="me-find-icon">${spriteIcon('i-search')}</span>
+            <input class="me-find-input" type="search" data-me-find placeholder="搜索歌词"
+              value="${esc(lyr.query)}" spellcheck="false" autocomplete="off" aria-label="在当前歌词里搜索">
+            <span class="me-find-count small muted" data-me-find-count>0 / 0</span>
+            <button class="icon-btn small" type="button" data-me-find-prev title="上一处" aria-label="上一处">
+              ${spriteIcon('i-chevron-up')}</button>
+            <button class="icon-btn small" type="button" data-me-find-next title="下一处" aria-label="下一处">
+              ${spriteIcon('i-chevron-down')}</button>
+          </div>
+        </header>
+        <div class="me-lpane-scroll" data-me-preview></div>
+        <footer class="me-lpane-foot">
+          <span class="small muted" data-me-preview-foot>共 0 行</span>
+        </footer>
+      </section>
+      <section class="me-lpane me-lpane-edit">
+        <header class="me-lpane-head">
+          <span class="me-lpane-title">歌词编辑区</span>
+          <span class="badge me-lpane-badge">LRC / TXT</span>
+          <div class="btn-row me-lpane-tools">
+            <button class="ghost-btn small" type="button" data-me-format title="整理成规范 LRC：保留已有时间轴，不编造时间戳">
+              ${spriteIcon('i-wand')}格式化结构</button>
+            <button class="ghost-btn small" type="button" data-me-clear title="清空编辑区（只清前端，不落盘）">
+              ${spriteIcon('i-trash')}清空</button>
+          </div>
+        </header>
+        <div class="me-code">
+          <div class="me-code-gutter" data-me-gutter aria-hidden="true"></div>
+          <textarea class="me-code-area" data-me-lyrics-text spellcheck="false" wrap="off"
+            placeholder="粘贴 LRC 或纯文本歌词…"></textarea>
         </div>
-        ${preview}
-      </div>
-      <div class="me-lyrics-edit">
-        <div class="me-block-head">
-          <span class="field-label">原始文本（可直接编辑 / 粘贴）</span>
-          <span class="small muted" data-me-lyrics-count>${text.length} 字</span>
-        </div>
-        <textarea class="me-lyrics-input" data-me-lyrics-text spellcheck="false"
-          placeholder="粘贴 LRC 或纯文本歌词…">${esc(text)}</textarea>
-      </div>
-      <div class="me-actions">
-        <button class="primary-btn" type="button" data-me-lyrics-save>保存歌词</button>
+        <footer class="me-lpane-foot me-edit-foot">
+          <span class="small muted mono" data-me-caret>Ln 1, Col 1</span>
+          <span class="small muted" data-me-lyrics-count>共 0 行歌词</span>
+          <button class="primary-btn small" type="button" data-me-lyrics-save>保存歌词</button>
+        </footer>
+      </section>
+      <div class="me-lsrc hidden" data-lsrc>
+        <div class="me-lsrc-card" data-lsrc-card></div>
       </div>
     </div>`;
+  bindLyricsControls(box);
   const area = box.querySelector('[data-me-lyrics-text]');
-  area?.addEventListener('input', () => {
-    const counter = box.querySelector('[data-me-lyrics-count]');
-    if (counter) counter.textContent = `${area.value.length} 字`;
+  if (area) area.value = lyricsDraftText(lyr);
+  renderLyricsPreview(box, lyr);
+  syncLyricsGutter(box, lyr);
+  syncLyricsStatus(box, lyr);
+  paintLyricsSource(box, lyr, track);
+}
+
+/** 左栏预览 + 命中计数：文本或查询变了都走这里，不重建整个 Tab。 */
+function renderLyricsPreview(box, lyr) {
+  const holder = box.querySelector('[data-me-preview]');
+  if (!holder) return;
+  if (lyr.loading) { holder.innerHTML = emptyBlock('i-lyrics', '正在读取歌词…'); return; }
+  if (lyr.error) { holder.innerHTML = emptyBlock('i-lyrics', lyr.error); return; }
+  const text = lyricsDraftText(lyr);
+  // [ti:]/[ar:] 这些头标签在左栏对话录没用，只在右栏编辑区里保留
+  const rows = trimTrailingBlanks(lrcPreviewRows(text).filter((row) => !row.meta));
+  const query = lyricsQuery(lyr);
+  const hitLines = lyricsHitLines(text, query);
+  const html = rows.map((row) => {
+    if (row.blank) return '<div class="me-lrc-line blank"><span>&nbsp;</span></div>';
+    const hit = hitLines.indexOf(row.line);
+    if (hit < 0) return `<div class="me-lrc-line"><span>${esc(row.text)}</span></div>`;
+    return `<div class="me-lrc-line hit" data-hitn="${hit}" data-line="${row.line}"><span>${markHits(row.text, query)}</span></div>`;
+  }).join('');
+  if (!rows.some((row) => !row.blank)) {
+    holder.innerHTML = `<div class="me-lpane-empty">
+      <span class="me-lpane-empty-icon">${spriteIcon('i-lyrics')}</span>
+      <p class="me-lpane-empty-text">这首曲目还没有歌词</p>
+      <button class="ghost-btn small" type="button" data-lsrc-open>从音源搜词</button>
+    </div>`;
+    setLyricsFindCount(box, 0, 0);
+    return;
+  }
+  holder.innerHTML = html;
+  const total = hitLines.length;
+  if (!total) lyr.hitIndex = 0;
+  else lyr.hitIndex = ((lyr.hitIndex % total) + total) % total;
+  setLyricsFindCount(box, total ? lyr.hitIndex + 1 : 0, total);
+  if (total) scrollLyricsHit(box, lyr, false);
+}
+
+function setLyricsFindCount(box, current, total) {
+  const counter = box.querySelector('[data-me-find-count]');
+  if (counter) counter.textContent = `${current} / ${total}`;
+}
+
+/** 把当前命中行滚进左栏可视区：只动这一栏的滚动，不惊动外层。 */
+function scrollLyricsHit(box, lyr, animate = true) {
+  const holder = box.querySelector('[data-me-preview]');
+  const row = holder?.querySelector(`[data-hitn="${lyr.hitIndex}"]`);
+  if (!holder || !row) return;
+  const rowRect = row.getBoundingClientRect();
+  const holderRect = holder.getBoundingClientRect();
+  const delta = (rowRect.top - holderRect.top) - (holder.clientHeight - rowRect.height) / 2;
+  const top = Math.max(0, holder.scrollTop + delta);
+  if (typeof holder.scrollTo === 'function') holder.scrollTo({ top, behavior: animate ? 'smooth' : 'auto' });
+  else holder.scrollTop = top;
+  holder.querySelectorAll('.me-lrc-line.current').forEach((node) => node.classList.remove('current'));
+  row.classList.add('current');
+}
+
+/** 行号列：与左栏同一份行数据，命中行在行号上也标出来，右侧同样看得见命中。 */
+function syncLyricsGutter(box, lyr) {
+  const area = box.querySelector('[data-me-lyrics-text]');
+  const gutter = box.querySelector('[data-me-gutter]');
+  if (!gutter) return;
+  const text = area ? area.value : lyricsDraftText(lyr);
+  const rows = lrcPreviewRows(text);
+  const query = lyricsQuery(lyr);
+  const hitLines = lyricsHitLines(text, query, true);
+  const nav = lyricsHitLines(text, query);
+  const current = nav.length ? nav[Math.min(lyr.hitIndex, nav.length - 1)] : -1;
+  const key = `${rows.length}:${hitLines.join(',')}:${current}`;
+  if (gutter.dataset.key !== key) {
+    gutter.dataset.key = key;
+    const hits = new Set(hitLines);
+    gutter.innerHTML = rows.map((row) => (
+      `<div class="me-code-ln${hits.has(row.line) ? ' hit' : ''}${row.line === current ? ' current' : ''}">${row.line + 1}</div>`
+    )).join('');
+  }
+  if (area) gutter.scrollTop = area.scrollTop;
+}
+
+/** 底部状态栏：光标行列 + 歌词行数（纯编辑信息），行数随编辑实时更新。 */
+function syncLyricsStatus(box, lyr) {
+  const area = box.querySelector('[data-me-lyrics-text]');
+  const caret = box.querySelector('[data-me-caret]');
+  const counter = box.querySelector('[data-me-lyrics-count]');
+  const foot = box.querySelector('[data-me-preview-foot]');
+  const text = area ? area.value : lyricsDraftText(lyr);
+  const lines = countLyricLines(text);
+  if (counter) counter.textContent = `共 ${lines} 行歌词`;
+  if (foot) {
+    let isLrc = false;
+    try { isLrc = parseLrc(text).isLrc; } catch { isLrc = false; }
+    foot.textContent = `共 ${lines} 行 · ${lines ? (isLrc ? 'LRC 时间轴' : '纯文本') : '无歌词'}`;
+  }
+  if (caret && area) {
+    const head = area.value.slice(0, area.selectionStart || 0);
+    const line = head.split('\n').length;
+    const column = head.length - head.lastIndexOf('\n');
+    caret.textContent = `Ln ${line}, Col ${column}`;
+  }
+}
+
+/* ---- 从音源搜词：复用 /api/library/search，候选里带「有没有词」 ---- */
+function lyricsSourceHtml(lyr, track) {
+  const sel = lyr.select;
+  const chips = (state.library.sources || []).map((item) => (
+    `<button class="cand-chip${item.enabled ? '' : ' dim'}${sel.form.source === item.id ? ' active' : ''}"
+       type="button" data-lsrc-source="${esc(item.id)}"
+       ${item.enabled ? '' : 'disabled title="该平台未在设置中启用"'}>
+       <b>${esc(item.label)}</b><span>${item.enabled ? '已启用' : '未启用'}</span></button>`
+  )).join('');
+  const results = sel.loading
+    ? `<div class="me-lsrc-note small muted">正在搜索…</div>`
+    : (sel.results.length
+      ? `<div class="me-lsrc-list">${sel.results.map((item, index) => lyricsSourceRow(item, index, sel.busy === index)).join('')}</div>`
+      : `<div class="me-lsrc-note small muted">${esc(sel.hint || '填好搜索词后点「搜索」，选中含歌词的候选会填进右侧编辑区。')}</div>`);
+  return `
+    <div class="me-lsrc-head">
+      <span class="me-lpane-title">从音源搜词</span>
+      <button class="icon-btn small" type="button" data-lsrc-close title="收起" aria-label="收起">
+        ${spriteIcon('i-close')}</button>
+    </div>
+    <div class="me-lsrc-body">
+      <div class="me-lsrc-form">
+        <label class="field"><span class="field-label">歌名</span>
+          <input data-lsrc-field="title" value="${esc(sel.form.title)}" placeholder="歌名"></label>
+        <label class="field"><span class="field-label">歌手</span>
+          <input data-lsrc-field="artist" value="${esc(sel.form.artist)}" placeholder="歌手"></label>
+        <label class="field"><span class="field-label">专辑</span>
+          <input data-lsrc-field="album" value="${esc(sel.form.album)}" placeholder="专辑"></label>
+      </div>
+      <div class="field">
+        <span class="field-label">来源平台（不选则搜全部已启用）</span>
+        <div class="cand-row">
+          <button class="cand-chip${sel.form.source ? '' : ' active'}" type="button" data-lsrc-source="">
+            <b>全部已启用</b><span>逐平台并发搜</span></button>
+          ${chips}
+        </div>
+      </div>
+      <div class="btn-row me-lsrc-bar">
+        <button class="primary-btn small" type="button" data-lsrc-search>${sel.loading ? '正在搜索…' : '搜索'}</button>
+        <span class="small muted">歌词只在点「保存歌词」时写入，选中候选不会动文件。</span>
+      </div>
+      ${results}
+      <p class="small muted me-lsrc-foot">
+        预览接口只报告「将写入的字段」：本曲目已有歌词时后端不会再列出歌词，所以「尝试取词」拿不到不代表来源没有词。
+      </p>
+      <p class="small muted">文件：<span class="mono">${esc(track.path || '')}</span></p>
+    </div>`;
+}
+
+function lyricsSourceRow(item, index, busy = false) {
+  const meta = item.metadata || {};
+  const hasLyrics = String(meta.lyrics || '').trim().length > 0;
+  const probe = {
+    ok: '<span class="badge info">来源可提供歌词（接口不返回正文）</span>',
+    none: `<span class="badge warn">${esc(LYRIC_NO_SOURCE)}</span>`,
+    unknown: '<span class="badge warn">无法确认：预览接口不返回歌词正文</span>',
+  }[item._probe] || '';
+  const action = hasLyrics
+    ? `<button class="primary-btn small" type="button" data-lsrc-fill="${index}">填入编辑区</button>`
+    : (item.can_fetch_lyrics
+      ? `<button class="ghost-btn small" type="button" data-lsrc-fetch="${index}" ${busy ? 'disabled' : ''}>
+          ${busy ? '正在取词…' : '尝试取词'}</button>`
+      : '<span class="small muted">无歌词可用</span>');
+  return `<article class="me-lsrc-item">
+    <div class="scrape-score ${scoreTone(item.score)}" title="匹配度 1–10"><b>${item.score}</b><span>/10</span></div>
+    <div class="scrape-main">
+      <div class="scrape-title">${esc(meta.title || '—')}</div>
+      <div class="scrape-sub">${esc([meta.artist, meta.album].filter(Boolean).join(' · ') || '—')}</div>
+      <div class="scrape-tags">
+        <span class="badge">${esc(item.source_label || sourceLabel(meta.source))}</span>
+        ${hasLyrics ? '<span class="badge ok">含歌词</span>' : '<span class="badge">无歌词</span>'}
+        ${probe}
+      </div>
+    </div>
+    <div class="btn-row">${action}</div>
+  </article>`;
+}
+
+function paintLyricsSource(box, lyr, track) {
+  const layer = box.querySelector('[data-lsrc]');
+  if (!layer) return;
+  layer.classList.toggle('hidden', !lyr.select.open);
+  const card = layer.querySelector('[data-lsrc-card]');
+  if (!card || !lyr.select.open) return;
+  // 重画面板时把滚动位置带回来，选平台、取词都不会把列表弹回顶部
+  const body = card.querySelector('.me-lsrc-body');
+  const keep = body ? body.scrollTop : 0;
+  card.innerHTML = lyricsSourceHtml(lyr, track || mediaTrack() || {});
+  const next = card.querySelector('.me-lsrc-body');
+  if (next) next.scrollTop = keep;
+}
+
+/** 面板输入只在搜索时读取，避免每次按键都重画面板把焦点弄丢。 */
+function readLyricsSourceForm(box) {
+  const form = {};
+  box.querySelectorAll('[data-lsrc-field]').forEach((input) => {
+    form[input.dataset.lsrcField] = input.value.trim();
   });
-  box.querySelector('[data-me-lyrics-save]')?.addEventListener('click', saveMediaLyrics);
+  return form;
+}
+
+async function searchLyricsSource(box, lyr) {
+  const path = editor.path;
+  if (!path || lyr.select.loading) return;   // 连点只发一次请求
+  Object.assign(lyr.select.form, readLyricsSourceForm(box));
+  lyr.select.loading = true;
+  lyr.select.hint = '';
+  lyr.select.results = [];
+  paintLyricsSource(box, lyr);
+  try {
+    const payload = await api('/api/library/search', {
+      method: 'POST',
+      body: {
+        path,
+        source: lyr.select.form.source || '',
+        title: lyr.select.form.title,
+        artist: lyr.select.form.artist,
+        album: lyr.select.form.album,
+      },
+    });
+    if (editor.path !== path) return;
+    lyr.select.results = payload.results || [];
+    lyr.select.hint = lyr.select.results.length
+      ? ''
+      : (payload.searched && payload.searched.length
+        ? '没有搜到结果，换个平台或改改搜索词试试'
+        : '没有可用的来源平台，请先在设置里启用');
+  } catch (error) {
+    lyr.select.results = [];
+    lyr.select.hint = error.message;
+  } finally {
+    lyr.select.loading = false;
+    if (editor.path === path) paintLyricsSource(mediaEditorNode()?.querySelector('[data-me-body]'), lyr);
+  }
+}
+
+/** 选中含歌词的候选：只填右侧编辑区，不落盘。 */
+function fillLyricsFromCandidate(box, lyr, index) {
+  const item = lyr.select.results[index];
+  const text = String(item?.metadata?.lyrics || '');
+  if (!text.trim()) { toast(LYRIC_NO_SOURCE, true); return; }
+  setLyricsDraft(box, lyr, text);
+  lyr.select.open = false;
+  paintLyricsSource(box, lyr);
+  toast(LYRIC_HINT);
+}
+
+/** 候选自带的歌词为空时，用 apply(dry_run) 探一次音源到底有没有词；拿不到就如实说。 */
+async function probeLyricsForCandidate(box, lyr, index) {
+  const path = editor.path;
+  const item = lyr.select.results[index];
+  if (!path || !item || lyr.select.busy >= 0) return;
+  lyr.select.busy = index;
+  paintLyricsSource(box, lyr);
+  try {
+    const payload = await api('/api/library/apply', {
+      method: 'POST',
+      body: {
+        path,
+        metadata: item.metadata,
+        with_lyrics: true,
+        fetch_lyrics: true,
+        dry_run: true,   // 只看「将写入什么」，一个字都不落盘
+      },
+    });
+    const planned = [...(payload.would_write || []), ...(payload.written || [])];
+    // 预览只报告「将写入的字段」：本曲目已有歌词时后端不会再列 lyrics，这时只能说「无法确认」，
+    // 不能反过来断言「该来源没有歌词」。
+    const mine = mediaTrack();
+    const already = lyr.draft === null ? !!(mine && mine.has_lyrics) : !!String(lyr.draft).trim();
+    if (planned.includes('lyrics')) {
+      item._probe = 'ok';
+      toast('该来源能取到歌词，但接口不返回歌词正文，填不进编辑区（不编造歌词）', true);
+    } else if (already) {
+      item._probe = 'unknown';
+      toast('这首已有歌词，预览接口不会再列出歌词，无法确认该来源有没有词', true);
+    } else {
+      item._probe = 'none';
+      toast(LYRIC_NO_SOURCE, true);
+    }
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    lyr.select.busy = -1;
+    if (editor.path === path) paintLyricsSource(mediaEditorNode()?.querySelector('[data-me-body]'), lyr);
+  }
+}
+
+function setLyricsDraft(box, lyr, text) {
+  lyr.draft = String(text ?? '');
+  const area = box.querySelector('[data-me-lyrics-text]');
+  if (area) { area.value = lyr.draft; area.scrollTop = 0; }
+  renderLyricsPreview(box, lyr);
+  syncLyricsGutter(box, lyr);
+  syncLyricsStatus(box, lyr);
+}
+
+/** 格式化结构：保留已有时间轴、归组元信息、统一空行；没有时间的行如实留着。 */
+function formatLrc(text) {
+  const meta = new Map();
+  const credits = [];
+  const body = [];
+  String(text ?? '').split(/\r?\n/).forEach((line) => {
+    const metaMatch = line.match(LRC_META_HEAD);
+    if (metaMatch) {
+      const key = metaMatch[1].toLowerCase();
+      if (!meta.has(key)) meta.set(key, metaMatch[2].trim());
+      return;
+    }
+    const trimmed = line.replace(LRC_STAMP_HEAD, '').replace(/\s+$/, '').trim();
+    const stamped = LRC_STAMP_HEAD.test(line);
+    // 没有时间轴的署名行归组到顶部；带时间轴的行不管内容一律留在正文
+    if (!stamped && LRC_CREDIT.test(trimmed)) {
+      const credit = trimmed.replace(/\s*[:：]\s*/, '：');
+      if (!credits.includes(credit)) credits.push(credit);
+      return;
+    }
+    const stampText = stamped ? (line.match(LRC_STAMPS) || []).map(normalizeLrcStamp) : [];
+    body.push({ text: trimmed, stamps: stampText });
+  });
+  // 纯 LRC（每一行都带时间轴）才按时间排序；混着无时间行的保持原顺序，不乱动
+  if (body.length && body.every((row) => row.stamps.length)) {
+    body.sort((a, b) => stampSeconds(a.stamps[0]) - stampSeconds(b.stamps[0]));
+  }
+  const keys = [
+    ...LRC_META_ORDER.filter((key) => meta.has(key)),
+    ...[...meta.keys()].filter((key) => !LRC_META_ORDER.includes(key)),
+  ];
+  const out = keys.map((key) => `[${key}:${meta.get(key)}]`).concat(credits);
+  body.forEach((row) => {
+    if (!row.text) {
+      // 空行压成段落间隔：连续空行只留一行，首尾不留空行
+      if (out.length && out[out.length - 1] !== '') out.push('');
+      return;
+    }
+    out.push(row.stamps.join('') + row.text);
+  });
+  while (out.length && out[out.length - 1] === '') out.pop();
+  return out.join('\n');
+}
+
+/** [1:2.5] → [01:02.50]；只补零，不改时间值。 */
+function normalizeLrcStamp(stamp) {
+  const match = String(stamp).match(/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/);
+  if (!match) return stamp;
+  const [, min, sec, frac] = match;
+  const fraction = (frac || '00').padEnd(2, '0').slice(0, 2);
+  return `[${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${fraction}]`;
+}
+
+function stampSeconds(stamp) {
+  const match = String(stamp).match(/\[(\d{1,3}):(\d{1,2})(?:\.(\d{1,3}))?\]/);
+  if (!match) return 0;
+  const [, min, sec, frac] = match;
+  return Number(min) * 60 + Number(sec) + Number((frac || '0').padEnd(3, '0')) / 1000;
+}
+
+/** 事件只绑一次：内容随 Tab 重画，全部走委托。 */
+function bindLyricsControls(box) {
+  if (box.dataset.lyricsBound === '1') return;
+  box.dataset.lyricsBound = '1';
+  box.addEventListener('click', (event) => {
+    // 点面板外的暗色区就收起来
+    if (event.target.dataset?.lsrc !== undefined) {
+      closeLyricsSourcePanel();
+      return;
+    }
+    const hit = event.target.closest?.('[data-lsrc-open],[data-lsrc-close],[data-lsrc-search],[data-lsrc-source],' +
+      '[data-lsrc-fill],[data-lsrc-fetch],[data-me-format],[data-me-clear],[data-me-lyrics-save],' +
+      '[data-me-find-prev],[data-me-find-next]');
+    if (!hit || !box.contains(hit) || editor.tab !== 'lyrics') return;
+    const lyr = editor.lyrics[editor.path];
+    if (!lyr) return;
+    if (hit.dataset.lsrcOpen !== undefined) {
+      lyr.select.open = true;
+      paintLyricsSource(box, lyr);
+      return;
+    }
+    if (hit.dataset.lsrcClose !== undefined) {
+      lyr.select.open = false;
+      paintLyricsSource(box, lyr);
+      return;
+    }
+    if (hit.dataset.lsrcSource !== undefined) {
+      lyr.select.form.source = hit.dataset.lsrcSource;
+      paintLyricsSource(box, lyr);
+      return;
+    }
+    if (hit.dataset.lsrcSearch !== undefined) { searchLyricsSource(box, lyr); return; }
+    if (hit.dataset.lsrcFill !== undefined) { fillLyricsFromCandidate(box, lyr, Number(hit.dataset.lsrcFill)); return; }
+    if (hit.dataset.lsrcFetch !== undefined) { probeLyricsForCandidate(box, lyr, Number(hit.dataset.lsrcFetch)); return; }
+    if (hit.dataset.meFormat !== undefined) {
+      const text = lyricsDraftText(lyr);
+      if (!text.trim()) { toast('编辑区还没有歌词', true); return; }
+      const next = formatLrc(text);
+      if (next === text) { toast('格式已经很规整了'); return; }
+      setLyricsDraft(box, lyr, next);
+      toast('已整理结构，还没保存');
+      return;
+    }
+    if (hit.dataset.meClear !== undefined) {
+      if (!lyricsDraftText(lyr).trim()) { toast('编辑区已经是空的', true); return; }
+      if (!confirm('清空编辑区里的全部歌词？\n（只清这里，不写文件；要落盘还得重新保存）')) return;
+      setLyricsDraft(box, lyr, '');
+      toast('已清空编辑区，文件没动');
+      return;
+    }
+    if (hit.dataset.meLyricsSave !== undefined) { saveMediaLyrics(); return; }
+    const total = box.querySelectorAll('.me-lrc-line[data-hitn]').length;
+    if (hit.dataset.meFindPrev !== undefined) {
+      if (!total) { toast('先在上面的搜索框里输入关键词', true); return; }
+      lyr.hitIndex = (lyr.hitIndex - 1 + total) % total;
+      setLyricsFindCount(box, lyr.hitIndex + 1, total);
+      scrollLyricsHit(box, lyr);
+      syncLyricsGutter(box, lyr);
+      return;
+    }
+    if (hit.dataset.meFindNext !== undefined) {
+      if (!total) { toast('先在上面的搜索框里输入关键词', true); return; }
+      lyr.hitIndex = (lyr.hitIndex + 1) % total;
+      setLyricsFindCount(box, lyr.hitIndex + 1, total);
+      scrollLyricsHit(box, lyr);
+      syncLyricsGutter(box, lyr);
+    }
+  });
+  box.addEventListener('input', (event) => {
+    if (editor.tab !== 'lyrics') return;
+    const lyr = editor.lyrics[editor.path];
+    if (!lyr) return;
+    if (event.target.dataset?.meLyricsText !== undefined) {
+      lyr.draft = event.target.value;
+      renderLyricsPreview(box, lyr);
+      syncLyricsGutter(box, lyr);
+      syncLyricsStatus(box, lyr);
+      return;
+    }
+    if (event.target.dataset?.meFind !== undefined) {
+      lyr.query = event.target.value;
+      lyr.hitIndex = 0;
+      renderLyricsPreview(box, lyr);
+      syncLyricsGutter(box, lyr);
+    }
+  });
+  box.addEventListener('scroll', (event) => {
+    if (event.target.dataset?.meLyricsText !== undefined) syncLyricsGutter(box, editor.lyrics[editor.path]);
+  }, true);
+  box.addEventListener('keydown', (event) => {
+    const area = event.target;
+    if (area.dataset?.meLyricsText === undefined) {
+      // 搜索框里回车：跳到下一处
+      if (event.target.dataset?.meFind !== undefined && event.key === 'Enter') {
+        event.preventDefault();
+        box.querySelector('[data-me-find-next]')?.click();
+      }
+      return;
+    }
+    if (event.key === 'Tab') {
+      // Tab 键不跑出编辑器：就地在光标处补两个空格
+      event.preventDefault();
+      const start = area.selectionStart;
+      const end = area.selectionEnd;
+      area.value = `${area.value.slice(0, start)}  ${area.value.slice(end)}`;
+      area.selectionStart = area.selectionEnd = start + 2;
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    // 上下左右只多派发一次状态同步，光标行号跟着动
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      setTimeout(() => syncLyricsStatus(box, editor.lyrics[editor.path]), 0);
+    }
+  });
+  box.addEventListener('keyup', (event) => {
+    if (event.target.dataset?.meLyricsText === undefined) return;
+    syncLyricsStatus(box, editor.lyrics[editor.path]);
+  });
+  box.addEventListener('blur', (event) => {
+    if (event.target.dataset?.meLyricsText === undefined) return;
+    syncLyricsStatus(box, editor.lyrics[editor.path]);
+  }, true);
 }
 
 async function loadMediaLyrics(path) {
   const box = mediaLyricsState(path);
   if (box.loading) return;
   box.loading = true;
+  box.error = '';
   paintMediaLyrics(mediaTrack() || { path });
   try {
     const detail = await api(`/api/library/detail?path=${encodeURIComponent(path)}`);
     box.text = detail.lyrics || '';
+    box.draft = null;
     box.error = '';
     const row = (state.library.tracks || []).find((item) => item.path === path);
     if (row) Object.assign(row, detail, { _lyrics: detail.lyrics || '' });
@@ -1561,7 +2160,9 @@ async function saveMediaLyrics() {
     await api('/api/library/lyrics', {
       method: 'PUT', body: { path, lyrics: text, dry_run: false },
     });
-    mediaLyricsState(path).text = text;
+    const lyr = mediaLyricsState(path);
+    lyr.text = text;
+    lyr.draft = null;
     toast('歌词已写入');
     pushSessionLog('写入歌词', '歌词', path);
     await refreshLibraryTrack(path);
@@ -3016,8 +3617,12 @@ $('drawer').addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (mediaEditorOpen()) closeMediaEditor();
-  else if (!$('drawer').classList.contains('hidden')) closeDrawer();
+  // 搜词面板盖在歌词 Tab 上时，ESC 先收它，再按一次才关编辑器
+  if (mediaEditorOpen()) {
+    if (!closeLyricsSourcePanel()) closeMediaEditor();
+    return;
+  }
+  if (!$('drawer').classList.contains('hidden')) closeDrawer();
   else if (!$('picker').classList.contains('hidden')) closePicker();
   else if (!$('modal').classList.contains('hidden')) closeModal();
 });
