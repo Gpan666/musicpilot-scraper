@@ -35,7 +35,7 @@ const PAGE_META = {
   files: ['源文件', '扫描源目录、选择文件并生成整理计划'],
   plan: ['整理计划', '先预览源 → 目标的映射，确认后再执行'],
   jobs: ['任务记录', '查看进度与明细、取消任务、导出表格（CSV）报告'],
-  settings: ['刮削设置', '命名模板、目标冲突策略、元数据来源与写入项'],
+  settings: ['刮削设置', '命名模板、冲突策略、元数据来源与自动刮削'],
   system: ['系统设置', '目录、转移方式与运行环境自检'],
   docs: ['转移方式说明', '复制 / 移动 / 硬链接 / 软链接 的原理、限制与适用场景'],
 };
@@ -53,6 +53,7 @@ const state = {
   settings: {},
   settingsMeta: {},
   modes: [],
+  modeChoice: null,   // 系统设置页里点了但还没保存的转移方式
   orderingNote: '',
   files: [],
   selected: new Set(),
@@ -337,6 +338,8 @@ function renderNav() {
   });
 }
 function go(page) {
+  // 系统设置里点了但没保存的转移方式不跟着跨页走，避免另一页保存时把它顺手写进去
+  if (page !== 'system') state.modeChoice = null;
   state.page = page;
   // 上一页还在飞的请求没人要了：先取消，控制台才不会冒出 ERR_CONNECTION_RESET
   switchRequestSlot(`page:${page}`);
@@ -497,8 +500,6 @@ async function renderDashboard() {
   const tracks = lib.tracks || [];
   const sources = (lib.sources || []).filter((item) => item.enabled);
 
-  /* 五个快捷磁贴：源文件 / 整理计划 / 任务记录 / 刮削设置 / 系统设置，
-   * 宽屏一行五等分，窄屏整行折行（见 .dash-quick 断点），不留半行空洞。 */
   const quickTiles = [
     ['files', '源文件', 'i-files'],
     ['plan', '整理计划', 'i-plan'],
@@ -544,8 +545,8 @@ async function renderDashboard() {
       <div class="mini-side"><span>${esc(fmtTime(item.created_at))}</span></div>
     </div>`).join('');
 
-  /* 版面是 CSS Grid 显式分栏：每行自己一份栅格，间隔由 gap 产生，
-   * 卡片是 border-box 的格子，边框与背景都收在自己的格里，相邻两张不会叠到一起。 */
+  /* 版面是「行 + Grid 分栏」：每行是一张 CSS Grid，间隔由 gap 产生，
+   * 卡片自己是 border-box，边框与背景永远不会越出格子，相邻卡片不会互相压住。 */
   $('page').innerHTML = `
     <div class="dash-board">
       <div class="dash-row dash-quick">${quickTiles}</div>
@@ -1162,7 +1163,7 @@ function bindLibraryBody(box, visible) {
  *   核心数据  只补空字段，先预览再写入（后端 /api/library/apply 的 dry_run）
  *   智能刮削  选平台 → 搜索 → 1–10 匹配度 → 预览 / 写入标签
  *   歌词      懒加载 detail，LRC 预览 + 原始文本编辑，整体替换
- *   操作历史  后端没有操作历史接口，只显示本次会话内真实做过的写入
+ *   操作历史  后端没有历史接口，只显示本次会话内真实做过的写入
  * 弹窗骨架一次建好、事件只绑一次（bindMediaEditor），反复开关不会叠加监听。
  */
 // 只有这七个字段后端支持写入（write_missing_tags 的白名单），其余一律只读
@@ -1650,7 +1651,7 @@ function parseLrc(text) {
   return { isLrc, rows };
 }
 
-/* ---- 操作历史：本次会话内的操作；后端没有操作历史接口，不做任何伪造 ---- */
+/* ---- 操作历史：本次会话内真实做过的写入；后端没有历史接口，不做任何伪造 ---- */
 function paintMediaTimeline(track) {
   const box = mediaEditorNode()?.querySelector('[data-me-body]');
   if (!box) return;
@@ -1671,7 +1672,7 @@ function paintMediaTimeline(track) {
             <span class="me-timeline-time mono">${esc(row.at)}</span>
           </li>`).join('')}</ol>`
         : emptyBlock('i-clock', '暂无操作记录 · 这首曲目还没有产生任何写入操作')}
-      <p class="small muted me-timeline-foot">后端没有提供操作历史接口，这里只记录本次会话内真实做过的写入（时间 + 操作 + 字段，写入标签、写入歌词…），刷新页面后清空。</p>
+      <p class="small muted me-timeline-foot">后端没有提供操作历史接口，这里只记录本次会话内做过的写入操作（写入标签、写入歌词…），刷新页面后清空。</p>
     </div>`;
 }
 
@@ -2676,23 +2677,32 @@ function bindCapabilityProbe() {
   });
 }
 
-/* ---------------- 设置：拆成「刮削设置」与「系统设置」两页 ---------------- */
-/* 两页共用同一份 /api/settings 数据，但各自的控件只在各自的页面上存在：
- * 保存时只收当前页真实存在的字段，缺的字段沿用 state.settings 里的原值，
- * 于是「改一页保存」不会把另一页的设置清空或覆盖。 */
-function modeCardsHtml() {
-  const s = state.settings;
-  return MODE_ORDER.map((mode) => {
-    const info = state.modes.find((item) => item.mode === mode) || {};
-    return `<div class="mode-card${s.transfer_mode === mode ? ' selected' : ''}" data-mode="${mode}">
-      <h3>${esc(info.label || modeLabel(mode))}</h3><div class="mode-en">${esc(info.short || '')}</div>
-      <p>${esc(info.short || '')}</p><div class="mode-tag">${s.transfer_mode === mode ? '✓ 当前使用' : '点击选用'}</div></div>`;
-  }).join('');
+/** 保存条：两页都有，保存逻辑共用 saveSettings()。 */
+function saveCard(hint) {
+  return `
+    <div class="panel span-4"><div class="between">
+      <div><h3>保存设置</h3>
+        <p class="small muted" style="margin-top:4px">${esc(hint)}</p></div>
+      <button class="primary-btn" id="save-settings">保存设置</button></div></div>`;
+}
+/** 目录字段的「浏览…」：两页只有系统设置用到，集中在这里绑，避免重复。 */
+function bindPathPickers() {
+  document.querySelectorAll('[data-pick-dir]').forEach((button) => {
+    button.addEventListener('click', () => openPicker(button.dataset.pickDir, button.dataset.pickTitle));
+  });
 }
 
-function accountCardHtml() {
-  if (!state.auth.is_admin) return '';
-  return `
+/* ---------------- 系统设置：目录、转移方式与运行环境自检 ---------------- */
+function renderSystem() {
+  const s = state.settings;
+  const chosen = state.modeChoice || s.transfer_mode;
+  const modeCards = MODE_ORDER.map((mode) => {
+    const info = state.modes.find((item) => item.mode === mode) || {};
+    return `<div class="mode-card${chosen === mode ? ' selected' : ''}" data-mode="${mode}">
+      <h3>${esc(info.label || modeLabel(mode))}</h3><div class="mode-en">${esc(info.short || '')}</div>
+      <p>${esc(info.short || '')}</p><div class="mode-tag">${chosen === mode ? '✓ 当前使用' : '点击选用'}</div></div>`;
+  }).join('');
+  const accountCard = state.auth.is_admin ? `
     <div class="panel span-2">
       <div class="panel-head"><div><h2>账户</h2>
         <p>当前登录：${esc(state.auth.username)}（管理员）。可以在这里添加新的使用账号。</p></div></div>
@@ -2703,12 +2713,69 @@ function accountCardHtml() {
           <input id="new-pass" type="password" autocomplete="new-password" placeholder="至少 8 位"></label>
       </div>
       <button class="ghost-btn" id="create-user">添加账号</button>
+    </div>` : '';
+  $('page').innerHTML = `
+    <div class="bento">
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>目录</h2>
+          <p>直接点「浏览…」从服务器挂载目录中选择，不需要手动输入路径</p></div></div>
+        <div class="grid">
+          ${pathField('f-source', '源目录（待刮削的下载文件夹）', s.source_dir, '选择源目录')}
+          ${pathField('f-library', '音乐库目录（整理后的目标）', s.library_dir, '选择音乐库目录')}
+        </div>
+      </div>
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>转移方式</h2>
+          <p>决定刮削完成后文件如何进入音乐库；四种方式的完整区别见「转移方式说明」</p></div></div>
+        <div class="mode-cards">${modeCards}</div>
+      </div>
+      <div class="panel span-4" id="cap-panel">
+        ${capabilityPanelHtml()}
+      </div>
+      ${accountCard}
+      ${saveCard('目录与转移方式保存在数据目录的 SQLite 中，重启容器后依然生效；环境变量作为默认值。')}
     </div>`;
+  bindPathPickers();
+  bindSaveButton();
+  document.querySelectorAll('[data-mode]').forEach((card) => card.addEventListener('click', () => {
+    // 只记在内存里，点「保存设置」才真正落库：改了不保存就切走，不会污染另一页的保存。
+    // 就地换选中态而不整页重画，旁边没保存的目录输入不会被冲掉。
+    state.modeChoice = card.dataset.mode;
+    document.querySelectorAll('[data-mode]').forEach((item) => {
+      const on = item.dataset.mode === state.modeChoice;
+      item.classList.toggle('selected', on);
+      const tag = item.querySelector('.mode-tag');
+      if (tag) tag.textContent = on ? '✓ 当前使用' : '点击选用';
+    });
+  }));
+  // 转移方式可用性：系统设置页自己拉 /api/system/capabilities
+  if (state.capabilities.loaded) paintCapabilityPanel(); else refreshCapabilityPanel();
+  const createUser = $('create-user');
+  if (createUser) createUser.addEventListener('click', async () => {
+    try {
+      await api('/api/auth/register', {
+        method: 'POST',
+        body: { username: $('new-user').value.trim(), password: $('new-pass').value },
+      });
+      $('new-user').value = '';
+      $('new-pass').value = '';
+      toast('账号已创建');
+    } catch (error) { toast(error.message, true); }
+  });
 }
 
-function watchCardHtml() {
+/* ---------------- 刮削设置：命名、元数据来源与自动刮削 ---------------- */
+function renderSettings() {
+  const meta = state.settingsMeta;
+  const s = state.settings;
+  const presets = (meta.templates || []).map((preset) => (
+    `<option value="${esc(preset.template)}">${esc(preset.name)}</option>`
+  )).join('');
+  const sourceChecks = SOURCE_OPTIONS.map(([name, label]) => `
+    <label class="check-line"><input type="checkbox" data-source="${name}" ${(s.metadata_sources || []).includes(name) ? 'checked' : ''}>
+      ${esc(label)}</label>`).join('');
   const watch = state.watch || {};
-  return `
+  const watchCard = `
     <div class="panel span-2">
       <div class="panel-head"><div><h2>自动刮削</h2>
         <p>盯住源目录，出现新文件就自动排一个刮削任务，不用再手动点</p></div>
@@ -2729,27 +2796,6 @@ function watchCardHtml() {
       </div>
       ${watch.last_error ? `<p class="small" style="color:var(--danger);margin-top:8px">${esc(watch.last_error)}</p>` : ''}
     </div>`;
-}
-
-/** 两页共用的保存条：说明 + 主按钮，id 一致，事件按页各自绑。 */
-function saveBarHtml(note) {
-  return `
-    <div class="panel span-4"><div class="between">
-      <div><h3>保存设置</h3>
-        <p class="small muted" style="margin-top:4px">${esc(note)}</p></div>
-      <button class="primary-btn" id="save-settings">保存设置</button></div></div>`;
-}
-
-/* 刮削设置：命名与匹配、目标冲突策略、元数据来源、写入项、外观、自动刮削 */
-function renderSettings() {
-  const meta = state.settingsMeta;
-  const s = state.settings;
-  const presets = (meta.templates || []).map((preset) => (
-    `<option value="${esc(preset.template)}">${esc(preset.name)}</option>`
-  )).join('');
-  const sourceChecks = SOURCE_OPTIONS.map(([name, label]) => `
-    <label class="check-line"><input type="checkbox" data-source="${name}" ${(s.metadata_sources || []).includes(name) ? 'checked' : ''}>
-      ${esc(label)}</label>`).join('');
   $('page').innerHTML = `
     <div class="bento">
       <div class="panel span-4">
@@ -2791,172 +2837,71 @@ function renderSettings() {
         <h3>标签写入与链接的关系</h3>
         <p class="muted small" style="margin-top:8px">标签在转移之前写入源文件。使用硬链接 / 软链接时目标共享源文件数据，因此源文件标签也会被补全，之后修改任一边都会影响另一边。若不希望改动源文件，请关闭「写入音频标签」或改用复制。</p>
       </div>
-      ${watchCardHtml()}
-      ${saveBarHtml('设置保存在数据目录的 SQLite 中，重启容器后依然生效；环境变量作为默认值。目录与转移方式在「系统设置」页。')}
+      ${watchCard}
+      ${saveCard('刮削参数保存在数据目录的 SQLite 中，重启容器后依然生效；环境变量作为默认值。')}
     </div>`;
   applyTheme(themePreference());
-  bindThemeChoices();
-  const preset = $('preset');
-  if (preset) preset.addEventListener('change', (event) => {
-    $('f-template').value = event.target.value;
-    updateExample();
-  });
-  const template = $('f-template');
-  if (template) template.addEventListener('input', updateExample);
-  bindSettingsCommon();
-}
-
-/* 系统设置：目录、转移方式、转移方式可用性（自检）、账户 */
-function renderSystem() {
-  const s = state.settings;
-  $('page').innerHTML = `
-    <div class="bento">
-      <div class="panel span-4">
-        <div class="panel-head"><div><h2>目录</h2>
-          <p>直接点「浏览…」从服务器挂载目录中选择，不需要手动输入路径</p></div></div>
-        <div class="grid">
-          ${pathField('f-source', '源目录（待刮削的下载文件夹）', s.source_dir, '选择源目录')}
-          ${pathField('f-library', '音乐库目录（整理后的目标）', s.library_dir, '选择音乐库目录')}
-        </div>
-      </div>
-      <div class="panel span-4">
-        <div class="panel-head"><div><h2>转移方式</h2>
-          <p>决定刮削完成后文件如何进入音乐库；四种方式的完整区别见「转移方式说明」</p></div></div>
-        <div class="mode-cards">${modeCardsHtml()}</div>
-      </div>
-      <div class="panel span-4" id="cap-panel">
-        ${capabilityPanelHtml()}
-      </div>
-      ${accountCardHtml()}
-      ${saveBarHtml('改完点保存才生效；转移方式与目录会写进数据目录的 SQLite。刮削参数在「刮削设置」页。')}
-    </div>`;
-  bindSettingsCommon();
-  // 转移方式可用性：系统设置页自己拉 /api/system/capabilities，只重画这一块面板
-  if (state.capabilities.loaded) paintCapabilityPanel(); else refreshCapabilityPanel();
-}
-
-/** 两页共用的交互：保存按钮、转移方式点选、目录「浏览…」、自检、watch 按钮、账户。 */
-function bindSettingsCommon() {
-  bindModeCards();
-  bindPathPickers();
-  bindThemeChoices();
-  const save = $('save-settings');
-  if (save) save.addEventListener('click', saveSettings);
-  bindCapabilityProbe();
-  const watchToggle = $('f-watch');
-  if (watchToggle) watchToggle.addEventListener('change', saveWatch);
-  const watchReset = $('watch-reset');
-  if (watchReset) watchReset.addEventListener('click', async () => {
-    try {
-      state.watch = await api('/api/watch/reset', { method: 'POST' });
-      toast('已把现有文件标记为已处理');
-      await repaintSettingsPage();
-    } catch (error) { toast(error.message, true); }
-  });
-  const createUser = $('create-user');
-  if (createUser) createUser.addEventListener('click', async () => {
-    try {
-      await api('/api/auth/register', {
-        method: 'POST',
-        body: { username: $('new-user').value.trim(), password: $('new-pass').value },
-      });
-      $('new-user').value = '';
-      $('new-pass').value = '';
-      toast('账号已创建');
-    } catch (error) { toast(error.message, true); }
-  });
-}
-
-/** 「保存设置」成功后重画当前这一页，而不是固定回刮削设置页。 */
-function repaintSettingsPage() {
-  const paint = state.page === 'system' ? renderSystem : renderSettings;
-  return paint();
-}
-
-function bindThemeChoices() {
   document.querySelectorAll('[data-theme-choice]').forEach((button) => {
     button.addEventListener('click', () => applyTheme(button.dataset.themeChoice));
   });
-}
-
-function bindPathPickers() {
-  document.querySelectorAll('[data-pick-dir]').forEach((button) => {
-    button.addEventListener('click', () => openPicker(button.dataset.pickDir, button.dataset.pickTitle));
+  $('preset').addEventListener('change', (event) => {
+    $('f-template').value = event.target.value;
+    updateExample();
+  });
+  $('f-template').addEventListener('input', updateExample);
+  bindSaveButton();
+  $('f-watch').addEventListener('change', saveWatch);
+  $('watch-reset').addEventListener('click', async () => {
+    try { state.watch = await api('/api/watch/reset', { method: 'POST' }); toast('已把现有文件标记为已处理'); renderPage(); }
+    catch (error) { toast(error.message, true); }
   });
 }
 
-/* 点选转移方式只改这几张卡的样式，不整页重画：旁边没保存的输入框不会被冲掉。 */
-function bindModeCards() {
-  document.querySelectorAll('[data-mode]').forEach((card) => {
-    card.addEventListener('click', () => {
-      state.settings.transfer_mode = card.dataset.mode;
-      document.querySelectorAll('[data-mode]').forEach((item) => {
-        const active = item.dataset.mode === card.dataset.mode;
-        item.classList.toggle('selected', active);
-        const tag = item.querySelector('.mode-tag');
-        if (tag) tag.textContent = active ? '✓ 当前使用' : '点击选用';
-      });
-    });
-  });
+function bindSaveButton() {
+  const button = $('save-settings');
+  if (button) button.addEventListener('click', saveSettings);
 }
 
 function updateExample() {
-  const input = $('f-template');
-  const out = $('template-example');
-  if (!input || !out) return;
-  const example = input.value
+  const template = $('f-template').value;
+  const example = template
     .replace(/\{artist\}/g, 'Queen').replace(/\{album\}/g, 'A Night at the Opera')
     .replace(/\{album_artist\}/g, 'Queen').replace(/\{title\}/g, 'Bohemian Rhapsody')
     .replace(/\{track(?::[^}]*)?\}/g, '11').replace(/\{disc(?::[^}]*)?\}/g, '1')
     .replace(/\{year\}/g, '1975').replace(/\{filename\}/g, '11 Bohemian Rhapsody')
     .replace(/\{ext\}/g, 'flac');
-  out.textContent = `${example}.flac`;
+  $('template-example').textContent = `${example}.flac`;
 }
 
-/** 读一个可能不在当前页的控件：元素不存在时返回 undefined，保存时沿用原值。 */
-function readField(id, pick) {
-  const node = $(id);
-  return node ? pick(node) : undefined;
-}
-
-/** 只收当前页真实存在的设置项；其余字段原样沿用 state.settings。 */
-function collectSettingsValues() {
-  const picked = {
-    transfer_mode: state.settings.transfer_mode,
-    naming_template: readField('f-template', (node) => node.value.trim()),
-    conflict_policy: readField('f-conflict', (node) => node.value),
-    unknown_placeholder: readField('f-unknown', (node) => node.value.trim() || '未知'),
-    confidence_threshold: readField('f-threshold', (node) => {
-      const value = Number(node.value);
-      return Number.isFinite(value) ? value : undefined;
-    }),
-    source_dir: readField('f-source', (node) => node.value.trim()),
-    library_dir: readField('f-library', (node) => node.value.trim()),
-    write_tags: readField('f-write-tags', (node) => node.checked),
-    embed_cover: readField('f-cover', (node) => node.checked),
-    write_lyrics: readField('f-lyrics', (node) => node.checked),
-    symlink_relative: readField('f-relative', (node) => node.checked),
-  };
-  // 音源勾选框只在刮削设置页：没有勾选框就整项不动，别写成空数组把音源清掉
-  const boxes = [...document.querySelectorAll('[data-source]')];
-  picked.metadata_sources = boxes.length
-    ? boxes.filter((box) => box.checked).map((box) => box.dataset.source)
-    : undefined;
-  const values = { ...state.settings };
-  Object.entries(picked).forEach(([key, value]) => {
-    if (value !== undefined) values[key] = value;
-  });
-  return values;
-}
-
+/** 保存设置：只收集当前页真实存在的控件，另一页没有的字段沿用 state.settings 的原值，
+ * 整体 PUT /api/settings（不新增接口），保存成功后重画当前页。 */
 async function saveSettings() {
-  const values = collectSettingsValues();
+  const values = { ...(state.settings || {}) };
+  const withNode = (id, apply) => { const node = $(id); if (node) apply(node); };
+  withNode('f-template', (node) => { values.naming_template = node.value.trim(); });
+  withNode('f-conflict', (node) => { values.conflict_policy = node.value; });
+  withNode('f-unknown', (node) => { values.unknown_placeholder = node.value.trim() || '未知'; });
+  withNode('f-threshold', (node) => {
+    const number = Number(node.value);
+    if (Number.isFinite(number)) values.confidence_threshold = number;
+  });
+  withNode('f-source', (node) => { values.source_dir = node.value.trim(); });
+  withNode('f-library', (node) => { values.library_dir = node.value.trim(); });
+  withNode('f-write-tags', (node) => { values.write_tags = node.checked; });
+  withNode('f-cover', (node) => { values.embed_cover = node.checked; });
+  withNode('f-lyrics', (node) => { values.write_lyrics = node.checked; });
+  withNode('f-relative', (node) => { values.symlink_relative = node.checked; });
+  const boxes = [...document.querySelectorAll('[data-source]')];
+  if (boxes.length) values.metadata_sources = boxes.filter((box) => box.checked).map((box) => box.dataset.source);
+  // 转移方式的选中状态只在系统设置页有卡片，取内存里的待保存值
+  if (state.modeChoice) values.transfer_mode = state.modeChoice;
   try {
     const result = await api('/api/settings', { method: 'PUT', body: { values } });
-    state.settings = result.settings;
+    state.settings = result.settings || state.settings;
     state.settingsMeta = result;
+    state.modeChoice = null;
     toast('设置已保存');
-    await repaintSettingsPage();
+    renderPage();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -2970,7 +2915,7 @@ async function saveWatch() {
     state.watch = await api('/api/watch', { method: 'PUT', body });
     toast(body.enabled ? '自动刮削已开启' : '自动刮削已关闭');
     await loadSettings();
-    await repaintSettingsPage();
+    renderPage();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -3010,6 +2955,7 @@ async function loadSettings() {
   const result = await api('/api/settings');
   state.settings = result.settings || {};
   state.settingsMeta = result;
+  state.modeChoice = null;   // 后端值已刷新，丢弃页面上没保存的选择
 }
 async function loadWatch() {
   try { state.watch = await api('/api/watch'); } catch (_) { state.watch = null; }

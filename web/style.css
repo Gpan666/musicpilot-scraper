@@ -421,39 +421,30 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .mini-side { flex: none; display: flex; align-items: center; gap: 8px; font-size: var(--fs-footnote); color: var(--text-3); }
 
 /* ---------- 概览：快捷入口 + 音乐库概览 + 最近入库 ---------- */
-/* 版面一律用 CSS Grid 显式分栏，间隔由 gap 产生：卡片是 border-box 的格子，
- * 边框与背景永远不会越出自己的那一格，相邻两卡之间就是一条 --gap 的空隙。 */
-.dash-board { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+/* 版面用 CSS Grid 显式分栏：间隔由 gap 产生，卡片自己是 border-box，
+ * 边框与背景永远不会越出自己的格子，相邻两张卡也不会叠在一起。 */
+.dash-board { display: flex; flex-direction: column; gap: var(--gap); }
 .dash-row {
-  display: grid;
-  gap: var(--gap);
-  align-items: start;
-  min-width: 0;
+  display: grid; gap: var(--gap); align-items: start;
+  min-width: 0; grid-template-columns: minmax(0, 1fr);
 }
-.dash-row > * { min-width: 0; }
 /* 行内卡片内部仍是纵向流：头部一行，下面各段自上而下排 */
 .dash-row > .panel { display: flex; flex-direction: column; }
-/* 7:5 = 宽卡 + 侧卡；计数卡两张等分；快捷磁贴五个等分 */
+/* 常见分栏：7:5 是「宽卡 + 侧卡」，快捷磁贴与计数卡等宽 */
 .dash-row-7-5 { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
-.dash-row-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .dash-quick { grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; }
-/* 只剩一张计数卡时（没启用任何在线音源）让它整行铺满，不留半行空洞 */
-.dash-row-counts > :only-child { grid-column: 1 / -1; }
-/* 折行后最后一行若只差一格，就让收尾那张磁贴跨格补齐，每行都是满的 */
-@media (max-width: 900px) {
-  .dash-quick { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .dash-quick > .quick-tile:nth-child(5):last-child { grid-column: span 2; }
-}
-@media (max-width: 620px) {
-  .dash-quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dash-quick > .quick-tile:nth-child(5):last-child { grid-column: 1 / -1; }
-}
-/* 7:5 的宽卡在窄屏会被压成细长条：1180 以下先改等比两栏，900 以下整行单列 */
+/* 计数卡：有元数据来源时两张平分，一个都没有时那张单独铺满，不留半行空洞 */
+.dash-row-counts { grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); align-items: stretch; }
+/* 断点：≤1180 时 7-5 等比两列；≤900 / ≤620 全部单列。
+ * 快捷磁贴窄屏改回弹性行：5 个磁贴折行后由 flex-grow 把每一行撑满，
+ * 不会像定列栅格那样在最后一行留半行空洞。 */
 @media (max-width: 1180px) {
   .dash-row-7-5 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .dash-quick { display: flex; flex-wrap: wrap; }
+  .dash-quick > .quick-tile { flex: 1 1 150px; }
 }
 @media (max-width: 900px) {
-  .dash-row-7-5, .dash-row-counts { grid-template-columns: minmax(0, 1fr); }
+  .dash-row-7-5, .dash-quick, .dash-row-counts { grid-template-columns: minmax(0, 1fr); }
 }
 .quick-tile {
   display: flex; align-items: center; gap: 10px;
