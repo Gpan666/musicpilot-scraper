@@ -50,3 +50,52 @@ main:
             password: ${GITHUB_ACCESS_TOKEN}
             branch: ${CNB_DEFAULT_BRANCH}
             force: true
+        # 仓库简介同步：GitHub 的 About 不在 git 里，整分支强推带不过去，
+        # 所以每次同步都单写一次 description。只动这一个字段，失败不阻断
+        # （allowFailure + 脚本内兜底 exit 0），不影响上面的 git 同步与 tag 的 Release 同步。
+        - name: sync github repo description
+          allowFailure: true
+          script: |
+            set -u
+            DESC='Self-hosted music scraper & library organizer: read tags, infer from filenames, fill missing fields from MusicBrainz / NetEase / QQ / KuGou / Kuwo, write tags, cover and lyrics, then copy, move, hardlink or symlink files into your library - with a visual preview before anything is written.'
+
+            if [ -z "${GITHUB_ACCESS_TOKEN:-}" ]; then
+              echo "WARNING: 缺少 GITHUB_ACCESS_TOKEN，跳过仓库简介同步"
+              exit 0
+            fi
+
+            REPO="${GITHUB_USERNAME}/${CNB_REPO_NAME}"
+            API_VERSION="2022-11-28"
+            PAYLOAD=/tmp/repo-description.json
+
+            # 构造 JSON 体：描述里有 & : / 但没有引号和反斜杠，仍按 JSON 规则转义一遍。
+            if command -v python3 >/dev/null 2>&1; then
+              DESC="$DESC" python3 -c 'import json,os; print(json.dumps({"description": os.environ["DESC"]}))' > "$PAYLOAD"
+            elif command -v jq >/dev/null 2>&1; then
+              jq -n --arg d "$DESC" '{description: $d}' > "$PAYLOAD"
+            else
+              ESCAPED=$(printf '%s' "$DESC" | sed 's/\\/\\\\/g; s/"/\\"/g')
+              printf '{"description": "%s"}\n' "$ESCAPED" > "$PAYLOAD"
+            fi
+
+            # 幂等：每次同步都跑，值没变 PATCH 也不会改动任何东西，不报错。
+            RESP=$(curl -sS -w '\n%{http_code}' -X PATCH \
+              -H "Authorization: Bearer ${GITHUB_ACCESS_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: ${API_VERSION}" \
+              "https://api.github.com/repos/${REPO}" \
+              -d @"$PAYLOAD" 2>&1) || RESP=""
+            rm -f "$PAYLOAD"
+
+            CODE=$(printf '%s' "${RESP}" | tail -n1)
+            if [ "${CODE}" != "200" ]; then
+              echo "WARNING: 仓库简介同步失败（HTTP ${CODE:-无响应}），不影响 git 分支同步与 Release 同步"
+              exit 0
+            fi
+
+            # 直接拿 PATCH 的响应复核，不再多发一次 GET。
+            if printf '%s' "${RESP}" | grep -q '"description":"Self-hosted'; then
+              echo "GitHub 仓库简介已同步：https://github.com/${REPO}"
+            else
+              echo "WARNING: 返回里没读到 description，请到 https://github.com/${REPO} 复核"
+            fi
