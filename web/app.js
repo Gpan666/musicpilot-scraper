@@ -61,7 +61,6 @@ const state = {
     filter: 'all', lyricFilter: 'all', coverFilter: 'all', genre: '', query: '',
     tab: 'tracks', view: localStorage.getItem('mp-lib-view') || 'table',
     page: 1, pageSize: Number(localStorage.getItem('mp-lib-size')) || 50, openGroup: '',
-    scrape: { path: null, source: '', results: [], loading: false, query: {} },
   },
   drawer: { jobId: null, items: [] },
 };
@@ -293,7 +292,6 @@ function openModal(title, html) {
 }
 function closeModal() {
   $('modal').classList.add('hidden');
-  $('modal').classList.remove('wide-modal');  // 宽版只属于音乐库详情，别带给下一个弹窗
 }
 
 /* ---------------- directory picker ---------------- */
@@ -598,7 +596,7 @@ function libraryTable(tracks) {
         : '<span class="lib-flag-icon bad" title="无歌词">✕</span>'}</td>
       <td class="lib-col-state">${trackBadge(track)}</td>
       <td class="lib-col-actions"><div class="btn-row nowrap">
-        <button class="icon-btn small" data-lib-edit="${index}" title="编辑（查看详情）" aria-label="编辑">
+        <button class="icon-btn small" data-lib-edit="${index}" title="编辑（打开媒体编辑器）" aria-label="编辑">
           ${spriteIcon('i-edit')}</button>
         <button class="icon-btn small" data-lib-scrape="${index}" title="手动刮削" aria-label="手动刮削">
           ${spriteIcon('i-scrape')}</button>
@@ -908,146 +906,562 @@ function bindLibraryBody(box, visible) {
       paintLibraryBody();
     };
   });
-  // 行 / 卡片：点空白处开详情，点按钮走各自的动作，避免一次点击触发两件事
+  // 行 / 卡片：点空白处进编辑器，点按钮走各自的动作，避免一次点击触发两件事
   box.querySelectorAll('[data-lib]').forEach((node) => {
     const path = node.dataset.lib;
     node.querySelectorAll('button[data-lib-edit],button[data-lib-scrape],button[data-lib-del]').forEach((button) => {
       button.onclick = (event) => {
         event.stopPropagation();
-        if (button.dataset.libEdit !== undefined) openLibraryDetail(path);
-        else if (button.dataset.libScrape !== undefined) openScrapeDialog(path);
+        if (button.dataset.libEdit !== undefined) openMediaEditor(path, 'core');
+        else if (button.dataset.libScrape !== undefined) openMediaEditor(path, 'scrape');
         else if (button.dataset.libDel !== undefined) removeLibraryTrack(path);
       };
     });
-    node.onclick = () => openLibraryDetail(path);
+    node.onclick = () => openMediaEditor(path, 'core');
     node.onkeydown = (event) => {
       if (event.target !== node) return;
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
-      openLibraryDetail(path);
+      openMediaEditor(path, 'core');
     };
   });
 }
 
-/** 详情弹窗：左栏元数据表、右栏歌词全文，底部一排操作按钮。 */
-function libraryDetail(track) {
-  const percent = trackCompleteness(track);
-  const row = (label, value) => `<div class="lib-detail-row">
-      <span class="lib-meta-key">${esc(label)}</span>
-      <span class="lib-detail-value${value ? '' : ' blank'}">${esc(value || '—')}</span></div>`;
-  const missing = (track.missing || []).map(fieldName).join('、');
-  const lyrics = track._lyrics !== undefined
-    ? (track._lyrics || '')
-    : (track.has_lyrics ? (track.lyrics_preview || '加载中…') : '');
-  return `<div class="lib-detail wide">
-    <div class="lib-detail-head">
-      ${coverThumb(track, 84)}
-      <div class="lib-detail-titles">
-        <div class="song-name">${esc(track.title || track.name)}</div>
-        <div class="song-sub">${esc([track.artist, track.album, track.year].filter(Boolean).join(' · ') || '—')}</div>
-        <div class="song-badges">${trackBadge(track)}
-          <span class="lib-tag mono">${esc(trackFormat(track))}</span>
-          <span class="conf ${completenessTone(percent / 100)}">完整度 ${percent}%</span>
-          <span class="badge">${track.has_lyrics ? '有歌词' : '无歌词'}</span></div>
-      </div>
-    </div>
-    <div class="lib-detail-split">
-      <div class="lib-detail-col">
-        <span class="field-label">元数据</span>
-        <div class="lib-detail-grid">
-          ${row('标题', track.title)}
-          ${row('歌手', track.artist)}
-          ${row('专辑', track.album)}
-          ${row('专辑艺术家', track.album_artist)}
-          ${row('流派', track.genre)}
-          ${row('年份', track.year)}
-          ${row('专辑轨号', track.track_number)}
-          ${row('碟号', track.disc_number)}
-          ${row('时长', fmtDuration(track.duration))}
-          ${row('大小', fmtSize(track.size))}
-          ${row('内嵌封面', track.has_cover ? '有' : '无')}
-          ${row('缺少字段', missing || '无')}
-        </div>
-        <span class="field-label">文件路径</span>
-        <div class="lib-path mono" title="${esc(track.path)}">${esc(track.path)}</div>
-      </div>
-      <div class="lib-detail-col">
-        <span class="field-label">歌词全文${track.has_lyrics ? '' : '（文件里没有歌词）'}</span>
-        <pre class="lib-lyrics-body">${esc(lyrics || '这个文件里没有歌词')}</pre>
-      </div>
-    </div>
-    <div class="lib-detail-actions">
-      <button class="primary-btn small" data-lib-scrape>手动刮削</button>
-      <button class="ghost-btn small" data-lib-fill>只补这一首</button>
-      <button class="ghost-btn small" data-lib-close>关闭</button>
-    </div>
-  </div>`;
+/* ================= 通用媒体编辑器 =================
+ * 点「编辑」/ 行内「手动刮削」/ 点整行，都进同一个全屏编辑器，只是落在不同的 Tab：
+ *   核心数据  只补空字段，先预览再写入（后端 /api/library/apply 的 dry_run）
+ *   智能刮削  选平台 → 搜索 → 1–10 匹配度 → 预览 / 写入标签
+ *   歌词      懒加载 detail，LRC 预览 + 原始文本编辑，整体替换
+ *   时光机    后端没有修改历史接口，只显示本次会话内的操作
+ * 弹窗骨架一次建好、事件只绑一次（bindMediaEditor），反复开关不会叠加监听。
+ */
+// 只有这七个字段后端支持写入（write_missing_tags 的白名单），其余一律只读
+const CORE_FIELDS = [
+  ['title', '标题'], ['artist', '歌手'], ['album', '专辑'], ['album_artist', '专辑艺术家'],
+  ['year', '年份'], ['track_number', '专辑轨号'], ['disc_number', '碟号'],
+];
+const READONLY_FIELDS = [['genre', '流派'], ['bitrate', '码率'], ['sample_rate', '采样率'], ['channels', '声道']];
+const editor = {
+  scrolls: {},   // 每个 Tab 内容区的滚动位置，切 Tab 再切回来不跳回顶部
+  session: [],   // 本次会话内的操作流水；后端没有历史接口，只记这里
+  lyrics: {},    // path → { text, loading, error }
+};
+
+function mediaEditorNode() { return $('media-editor'); }
+function mediaEditorOpen() { return !!editor.path; }
+
+/** 打开编辑器：传 path + 初始 Tab，数据全从音乐库列表里查。 */
+function openMediaEditor(path, tab = 'core') {
+  const track = (state.library.tracks || []).find((row) => row.path === path);
+  if (!track) { toast('这首曲目不在当前音乐库列表里，请刷新后重试', true); return; }
+  const node = mediaEditorNode();
+  if (!node) return;
+  const switched = editor.path !== path;
+  editor.path = path;
+  if (switched) {
+    editor.scrape = { path, source: '', results: [], loading: false };
+    editor.tab = tab || 'core';
+  }
+  node.classList.remove('hidden');
+  node.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('editor-open');
+  switchMediaTab(tab || 'core', { keepScroll: !switched });
+  const close = node.querySelector('[data-me-close]');
+  if (close) close.focus({ preventScroll: true });
 }
 
-/** 点曲目：弹宽版详情；歌词全文按需懒加载，卡片在数据回来后原位重绘。 */
-async function openLibraryDetail(path) {
-  const track = (state.library.tracks || []).find((row) => row.path === path);
+function closeMediaEditor() {
+  const node = mediaEditorNode();
+  if (node) {
+    node.classList.add('hidden');
+    node.setAttribute('aria-hidden', 'true');
+  }
+  document.body.classList.remove('editor-open');
+  editor.path = null;
+  // 关闭时列表状态不动：筛选 / 分页 / 视图都留在原地
+}
+
+function switchMediaTab(tab, options = {}) {
+  const current = editor.tab || 'core';
+  if (options.keepScroll !== false) {
+    const oldBody = mediaEditorNode()?.querySelector('[data-me-body]');
+    if (oldBody) editor.scrolls[current] = oldBody.scrollTop;
+  }
+  editor.tab = tab;
+  mediaEditorNode()?.querySelectorAll('[data-me-tab]').forEach((button) => {
+    const active = button.dataset.meTab === tab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  paintMediaHeader();
+  paintMediaSide();
+  paintMediaBody(tab);
+  const body = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (body) body.scrollTop = options.keepScroll === false ? 0 : (editor.scrolls[tab] || 0);
+}
+
+/** 重画左栏（完整度 / 待写字段）与当前 Tab；写入标签或歌词后调用。 */
+function refreshMediaEditor() {
+  paintMediaSide();
+  paintMediaHeader();
+  paintMediaBody(editor.tab || 'core');
+}
+
+function mediaTrack() {
+  return (state.library.tracks || []).find((row) => row.path === editor.path) || null;
+}
+
+/* ---- 本次会话的操作流水 ---- */
+function pushSessionLog(action, fields, path) {
+  editor.session.unshift({
+    path: path || editor.path,
+    action,
+    fields: fields || '',
+    at: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+  });
+  const mine = editor.session.filter((row) => row.path === editor.path);
+  editor.session = [];  // 只留最近 50 条，够看就行
+  editor.session = mine.concat(editor.session).slice(0, 50);
+}
+
+function sessionLogFor(path) {
+  return editor.session.filter((row) => row.path === path);
+}
+
+/* ---- 左栏 / 顶部 ---- */
+function paintMediaHeader() {
+  const track = mediaTrack();
+  const node = mediaEditorNode();
+  if (!node) return;
+  const name = node.querySelector('[data-me-heading]');
+  if (name) name.textContent = track ? (track.title || track.name) : '媒体编辑器';
+  const file = node.querySelector('[data-me-filename]');
+  if (file) file.textContent = track ? track.name : '';
+}
+
+function paintMediaSide() {
+  const box = mediaEditorNode()?.querySelector('[data-me-info]');
+  const track = mediaTrack();
+  if (!box) return;
+  if (!track) { box.innerHTML = '<div class="empty">曲目已不在列表中</div>'; return; }
+  const percent = trackCompleteness(track);
+  const missing = (track.missing || []).map(fieldName);
+  const pending = missing;
+  const cover = track.cover_url
+    ? `<span class="me-cover">${`<img src="${esc(track.cover_url)}" alt="" data-me-cover>`}
+        <span class="me-cover-fallback">${spriteIcon('i-disc')}</span></span>`
+    : `<span class="me-cover"><span class="me-cover-fallback">${spriteIcon('i-disc')}</span></span>`;
+  const facts = [
+    ['格式', trackFormat(track)],
+    ['时长', fmtDuration(track.duration)],
+    ['大小', fmtSize(track.size)],
+    ['修改时间', track.modified_at ? new Date(track.modified_at * 1000).toLocaleString('zh-CN') : '—'],
+    ['内嵌封面', track.has_cover ? '有' : '无'],
+    ['软链接', track.is_symlink ? '是' : '否'],
+  ];
+  box.innerHTML = `
+    ${cover}
+    <div class="me-side-names">
+      <div class="me-side-title">${esc(track.title || track.name)}</div>
+      <div class="me-side-sub">${esc([track.artist || '—', track.album || '—', track.year || '—'].join(' · '))}</div>
+    </div>
+    <div class="me-side-block">
+      <div class="me-complete">
+        ${ringHtml(percent, completenessTone(percent / 100), 54)}
+        <div class="me-complete-text">
+          <span class="field-label">信息完整度</span>
+          <span class="me-complete-hint">${pending.length ? `缺：${esc(missing.join('、'))}` : '字段齐全'}</span>
+        </div>
+      </div>
+      <div class="progress me-complete-bar"><span class="${completenessTone(percent / 100)}" style="width:${percent}%"></span></div>
+    </div>
+    <div class="me-side-block">
+      <span class="field-label">待写字段</span>
+      ${pending.length
+        ? `<p class="me-pending">待写入：${esc(missing.join('、'))}</p>`
+        : '<p class="me-pending empty">没有待写字段</p>'}
+    </div>
+    <div class="me-side-block">
+      <span class="field-label">物理属性</span>
+      <div class="me-facts">
+        ${facts.map(([label, value]) => `<div class="me-fact">
+          <span>${esc(label)}</span><b>${esc(value)}</b></div>`).join('')}
+      </div>
+      <div class="me-path mono" title="${esc(track.path)}">${esc(track.path)}</div>
+    </div>
+    <button class="ghost-btn block me-player" type="button" disabled title="本项目暂无播放器" aria-disabled="true">
+      ${spriteIcon('i-play')}打开沉浸式播放器</button>
+    <p class="me-player-note">本项目暂无播放器</p>`;
+
+  box.querySelector('img[data-me-cover]')?.addEventListener('error', (event) => {
+    event.currentTarget.classList.add('hidden');
+  }, { once: true });
+}
+
+/* ---- Tab 内容分发 ---- */
+function paintMediaBody(tab) {
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (!box) return;
+  const track = mediaTrack();
+  if (!track) { box.innerHTML = '<div class="empty">曲目已不在列表中</div>'; return; }
+  if (tab === 'scrape') { paintMediaScrape(track); return; }
+  if (tab === 'lyrics') { paintMediaLyrics(track); return; }
+  if (tab === 'timeline') { paintMediaTimeline(track); return; }
+  paintMediaCore(track);
+}
+
+/* ---- 核心数据：只补空字段，先预览再写入 ---- */
+function paintMediaCore(track) {
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (!box) return;
+  const allDone = !(track.missing || []).length;
+  const rows = CORE_FIELDS.map(([key, label]) => {
+    const value = key === 'title' ? (track.title || '') : (track[key] ?? '');
+    const filled = String(value ?? '').trim() !== '';
+    const hint = filled
+      ? '<span class="me-field-hint">已有标签，后端只补空字段</span>'
+      : (allDone ? '' : '<span class="me-field-hint">可填写，保存时只补这一项</span>');
+    return `<label class="field me-field${filled ? ' locked' : ''}">
+      <span class="field-label">${esc(label)}</span>
+      <input data-me-field="${key}" value="${esc(filled ? value : '')}"
+        placeholder="${filled ? '' : '留空表示不写'}" ${filled ? 'disabled' : ''}>
+      ${hint}
+    </label>`;
+  }).join('');
+  const readonly = READONLY_FIELDS.map(([key, label]) => {
+    const value = key === 'genre' ? (track.genre || '') : '';
+    return `<div class="me-ro-row">
+      <span class="me-ro-key">${esc(label)}</span>
+      <span class="me-ro-value${value ? '' : ' blank'}">${esc(value || '—')}</span>
+      <span class="badge">${value ? '暂不支持写入' : '后端未提供'}</span></div>`;
+  }).join('');
+  box.innerHTML = `
+    <div class="me-core-note">
+      <p class="small muted">保存只补空字段，文件里已有的标签一个都不会被覆盖，也不移动文件位置。</p>
+    </div>
+    <div class="me-form">${rows}</div>
+    <div class="me-readonly">
+      <span class="field-label">后端不支持写入的字段</span>
+      ${readonly}
+    </div>
+    <div class="me-actions">
+      ${allDone
+        ? '<span class="small muted">该文件字段齐全，无需补全</span>'
+        : '<button class="primary-btn" type="button" data-me-core-save>保存（先预览再写入）</button>'}
+      <button class="ghost-btn" type="button" data-me-fill-one>只补这一首</button>
+    </div>`;
+  box.querySelector('[data-me-core-save]')?.addEventListener('click', saveCorePending);
+  box.querySelector('[data-me-fill-one]')?.addEventListener('click', () => fillOne(track.path));
+}
+
+/** 核心数据保存：先 dry_run 预览「将写入：…」，用户确认后再真写。 */
+async function saveCorePending() {
+  const track = mediaTrack();
   if (!track) return;
-  openModal('歌曲详情', libraryDetail(track));
-  $('modal').classList.add('wide-modal');
-  const body = $('modal-body');
-  body.querySelector('[data-lib-scrape]')?.addEventListener('click', () => openScrapeDialog(path));
-  body.querySelector('[data-lib-fill]')?.addEventListener('click', () => fillOne(path));
-  body.querySelector('[data-lib-close]')?.addEventListener('click', closeModal);
-  if (!track.has_lyrics || track._lyrics !== undefined) return;
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  const metadata = { title: track.title || track.name };
+  if (box) {
+    box.querySelectorAll('input[data-me-field]').forEach((input) => {
+      if (input.disabled) return;
+      const value = input.value.trim();
+      if (value) metadata[input.dataset.meField] = value;  // 留空不写，免得清掉后端读到的值
+    });
+  }
+  const filled = Object.keys(metadata).filter((key) => key !== 'title');
+  if (!filled.length) { toast('没有填写任何待补字段', true); return; }
   try {
-    const detail = await api(`/api/library/detail?path=${encodeURIComponent(path)}`);
-    track._lyrics = detail.lyrics || '';
-    if ($('modal-title').textContent !== '歌曲详情') return;
-    openModal('歌曲详情', libraryDetail(track));
-    $('modal').classList.add('wide-modal');
-    $('modal-body').querySelector('[data-lib-scrape]')?.addEventListener('click', () => openScrapeDialog(path));
-    $('modal-body').querySelector('[data-lib-fill]')?.addEventListener('click', () => fillOne(path));
-    $('modal-body').querySelector('[data-lib-close]')?.addEventListener('click', closeModal);
+    const preview = await api('/api/library/apply', {
+      method: 'POST', body: { path: track.path, metadata, dry_run: true },
+    });
+    const labels = preview.would_write_labels || [];
+    if (!labels.length) { toast(preview.message || '没有可写入的字段', true); return; }
+    if (!confirm(`将写入：${labels.join('、')}\n（只补空字段，文件位置不变）\n\n确认写入？`)) return;
+    const result = await api('/api/library/apply', {
+      method: 'POST', body: { path: track.path, metadata, dry_run: false },
+    });
+    const done = result.written_labels || labels;
+    toast(`已补全：${done.join('、')}`);
+    pushSessionLog('写入标签', done.join('、'));
+    await refreshLibraryTrack(track.path);
+    paintLibraryBody();
+    refreshMediaEditor();
   } catch (error) { toast(error.message, true); }
 }
 
-/* ---- 手动刮削：选平台 → 搜索 → 看 1–10 匹配度 → 预览 / 写入 ---- */
-async function openScrapeDialog(path) {
-  const track = (state.library.tracks || []).find((row) => row.path === path) || {};
-  state.library.scrape = { path, source: '', results: [], loading: false, query: {} };
+/* ---- 智能刮削：平台 chips → 搜索 → 1–10 匹配度 → 预览 / 写入 ---- */
+function paintMediaScrape(track) {
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (!box) return;
+  if (!editor.scrape || editor.scrape.path !== track.path) {
+    editor.scrape = { path: track.path, source: '', results: [], loading: false };
+  }
+  const scrape = editor.scrape;
   const chips = (state.library.sources || []).map((item) => (
-    `<button class="cand-chip${item.enabled ? '' : ' dim'}" data-scrape-source="${esc(item.id)}"
+    `<button class="cand-chip${item.enabled ? '' : ' dim'}${scrape.source === item.id ? ' active' : ''}"
+       type="button" data-scrape-source="${esc(item.id)}"
        ${item.enabled ? '' : 'disabled title="该平台未在设置中启用"'}>
        <b>${esc(item.label)}</b><span>${item.enabled ? '已启用' : '未启用'}</span></button>`
   )).join('');
-  closeModal();  // 先清掉上一个弹窗的宽版类，刮削面板保持普通宽度
-  openModal('手动刮削', `
-    <p class="small muted">文件：<span class="mono">${esc(path)}</span></p>
-    <div class="field" style="margin-top:12px">
-      <span class="field-label">来源平台（点一下选中，再搜索）</span>
-      <div class="cand-row" id="scrape-sources">
-        <button class="cand-chip active" data-scrape-source=""><b>全部已启用</b><span>逐平台并发搜</span></button>
-        ${chips}
+  const results = scrape.results.length
+    ? `<div class="scrape-results">${scrape.results.map(scrapeResultCard).join('')}</div>`
+    : (scrape.searched
+      ? `<div class="empty">${esc(scrape.searched.hint)}</div>`
+      : '<div class="empty">填好搜索词后点「搜索」，结果按 1–10 匹配度排序</div>');
+  box.innerHTML = `
+    <div class="me-scrape">
+      <p class="small muted">文件：<span class="mono">${esc(track.path)}</span></p>
+      <div class="field">
+        <span class="field-label">来源平台（点一下选中，再搜索）</span>
+        <div class="cand-row" id="scrape-sources">
+          <button class="cand-chip${scrape.source ? '' : ' active'}" type="button" data-scrape-source="">
+            <b>全部已启用</b><span>逐平台并发搜</span></button>
+          ${chips}
+        </div>
       </div>
-    </div>
-    <div class="grid" style="margin-top:12px">
-      <label class="field"><span class="field-label">歌名</span>
-        <input id="scrape-title" value="${esc(track.title || '')}"></label>
-      <label class="field"><span class="field-label">歌手</span>
-        <input id="scrape-artist" value="${esc(track.artist || '')}"></label>
-      <label class="field"><span class="field-label">专辑</span>
-        <input id="scrape-album" value="${esc(track.album || '')}"></label>
-    </div>
-    <div class="btn-row" style="margin-top:12px">
-      <button class="primary-btn" id="scrape-search">搜索</button>
-      <span class="small muted">匹配度 1–10：10 表示歌名、歌手、专辑全对得上；7 分以上才建议写入。</span>
-    </div>
-    <div id="scrape-results" class="scrape-results"></div>`);
-  document.querySelectorAll('[data-scrape-source]').forEach((button) => {
+      <div class="me-scrape-form">
+        <label class="field"><span class="field-label">歌名</span>
+          <input id="scrape-title" value="${esc(track.title || '')}" placeholder="歌名"></label>
+        <label class="field"><span class="field-label">歌手</span>
+          <input id="scrape-artist" value="${esc(track.artist || '')}" placeholder="歌手"></label>
+        <label class="field"><span class="field-label">专辑</span>
+          <input id="scrape-album" value="${esc(track.album || '')}" placeholder="专辑"></label>
+      </div>
+      <div class="btn-row me-scrape-bar">
+        <button class="primary-btn" type="button" data-scrape-search>${scrape.loading ? '正在搜索…' : '搜索'}</button>
+        <span class="small muted">匹配度 1–10：10 表示歌名、歌手、专辑全对得上；7 分以上才建议写入。</span>
+      </div>
+      <div id="scrape-results">${results}</div>
+    </div>`;
+  box.querySelectorAll('[data-scrape-source]').forEach((button) => {
     button.addEventListener('click', () => {
-      state.library.scrape.source = button.dataset.scrapeSource;
-      document.querySelectorAll('[data-scrape-source]').forEach((node) => {
+      editor.scrape.source = button.dataset.scrapeSource;
+      box.querySelectorAll('[data-scrape-source]').forEach((node) => {
         node.classList.toggle('active', node === button);
       });
     });
   });
-  $('scrape-search').addEventListener('click', searchLibrary);
+  box.querySelector('[data-scrape-search]')?.addEventListener('click', searchLibrary);
+  box.querySelectorAll('[data-scrape-apply]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const item = editor.scrape.results[Number(button.dataset.scrapeApply)];
+      applyScrapeResult(item, button.dataset.dry === '1');
+    });
+  });
+}
+
+async function searchLibrary() {
+  const scrape = editor.scrape;
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (!scrape || !scrape.path || !box) return;
+  const title = box.querySelector('#scrape-title')?.value.trim() || '';
+  const artist = box.querySelector('#scrape-artist')?.value.trim() || '';
+  const album = box.querySelector('#scrape-album')?.value.trim() || '';
+  const holder = box.querySelector('#scrape-results');
+  if (holder) holder.innerHTML = '<div class="empty">正在搜索…</div>';
+  scrape.loading = true;
+  try {
+    const payload = await api('/api/library/search', {
+      method: 'POST',
+      body: { path: scrape.path, source: scrape.source || '', title, artist, album },
+    });
+    if (editor.path !== scrape.path) return;
+    scrape.results = payload.results || [];
+    scrape.searched = scrape.results.length
+      ? { hint: `在 ${(payload.searched || []).map(sourceLabel).join(' / ') || '所选平台'} 搜到 ${scrape.results.length} 条结果` }
+      : { hint: payload.searched && payload.searched.length ? '没有搜到结果，换个平台或改改搜索词试试' : '没有可用的来源平台，请先在设置里启用' };
+  } catch (error) {
+    scrape.results = [];
+    scrape.searched = { hint: error.message };
+  } finally {
+    scrape.loading = false;
+    if (editor.path === scrape.path && editor.tab === 'scrape') {
+      const scroll = box.scrollTop;
+      paintMediaScrape(mediaTrack() || { path: scrape.path });
+      const body = mediaEditorNode()?.querySelector('[data-me-body]');
+      if (body) body.scrollTop = scroll;
+    }
+  }
+}
+
+async function applyScrapeResult(item, dryRun) {
+  if (!item || !editor.path) return;
+  const path = editor.path;
+  try {
+    const payload = await api('/api/library/apply', {
+      method: 'POST',
+      body: { path, metadata: item.metadata, dry_run: dryRun },
+    });
+    const labels = (payload.written_labels && payload.written_labels.length
+      ? payload.written_labels
+      : payload.would_write_labels || []).join('、');
+    if (dryRun) {
+      toast(labels ? `将补全：${labels}（文件位置不变）` : '这个候选没有能补的字段', !labels);
+      return;
+    }
+    toast(payload.message || (labels ? `已补全：${labels}` : '没有可写入的字段'), !labels);
+    if (labels) {
+      pushSessionLog('写入标签', labels, path);
+      await refreshLibraryTrack(path);
+      paintLibraryBody();
+      refreshMediaEditor();
+    }
+  } catch (error) { toast(error.message, true); }
+}
+
+/* ---- 歌词：懒加载 detail，LRC 逐行预览 + 原始文本编辑，整体替换 ---- */
+function mediaLyricsState(path) {
+  if (!editor.lyrics[path]) editor.lyrics[path] = { text: null, loading: false, error: '' };
+  return editor.lyrics[path];
+}
+
+function paintMediaLyrics(track) {
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (!box) return;
+  const lyr = mediaLyricsState(track.path);
+  if (lyr.text === null && !lyr.loading && !lyr.error) loadMediaLyrics(track.path);
+  const text = lyr.text || '';
+  let lines = { isLrc: false, rows: [] };
+  try { lines = parseLrc(text); } catch { lines = { isLrc: false, rows: [] }; }
+  const preview = lyr.loading
+    ? '<div class="empty">正在读取歌词…</div>'
+    : lyr.error
+      ? `<div class="empty">${esc(lyr.error)}</div>`
+      : (text.trim()
+        ? (lines.isLrc
+          ? `<div class="me-lyrics-preview">${lines.rows.map((row) => `<div class="me-lrc-line${row.text ? '' : ' blank'}">
+              <span class="me-lrc-time mono">${esc(row.stamp)}</span><span>${esc(row.text || ' ')}</span></div>`).join('')}</div>`
+          : `<pre class="me-lyrics-raw">${esc(text)}</pre>`)
+        : '<div class="empty">该文件没有歌词，可在下方粘贴后保存</div>');
+  box.innerHTML = `
+    <div class="me-lyrics">
+      <div class="me-lyrics-note small muted">
+        歌词是整体替换：保存后文件里的旧歌词会被这段文本覆盖（不受「只补空字段」限制）。
+      </div>
+      <div class="me-lyrics-preview-wrap">
+        <div class="me-block-head">
+          <span class="field-label">歌词预览</span>
+          <span class="badge">${text.trim() ? (lines.isLrc ? 'LRC 时间轴' : '纯文本') : '暂无歌词'}</span>
+        </div>
+        ${preview}
+      </div>
+      <div class="me-lyrics-edit">
+        <div class="me-block-head">
+          <span class="field-label">原始文本（可直接编辑 / 粘贴）</span>
+          <span class="small muted" data-me-lyrics-count>${text.length} 字</span>
+        </div>
+        <textarea class="me-lyrics-input" data-me-lyrics-text spellcheck="false"
+          placeholder="粘贴 LRC 或纯文本歌词…">${esc(text)}</textarea>
+      </div>
+      <div class="me-actions">
+        <button class="primary-btn" type="button" data-me-lyrics-save>保存歌词</button>
+      </div>
+    </div>`;
+  const area = box.querySelector('[data-me-lyrics-text]');
+  area?.addEventListener('input', () => {
+    const counter = box.querySelector('[data-me-lyrics-count]');
+    if (counter) counter.textContent = `${area.value.length} 字`;
+  });
+  box.querySelector('[data-me-lyrics-save]')?.addEventListener('click', saveMediaLyrics);
+}
+
+async function loadMediaLyrics(path) {
+  const box = mediaLyricsState(path);
+  if (box.loading) return;
+  box.loading = true;
+  paintMediaLyrics(mediaTrack() || { path });
+  try {
+    const detail = await api(`/api/library/detail?path=${encodeURIComponent(path)}`);
+    box.text = detail.lyrics || '';
+    box.error = '';
+    const row = (state.library.tracks || []).find((item) => item.path === path);
+    if (row) Object.assign(row, detail, { _lyrics: detail.lyrics || '' });
+  } catch (error) {
+    box.text = '';
+    box.error = error.message;
+  } finally {
+    box.loading = false;
+    if (editor.path === path && editor.tab === 'lyrics') paintMediaLyrics(mediaTrack() || { path });
+  }
+}
+
+async function saveMediaLyrics() {
+  const path = editor.path;
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  const area = box?.querySelector('[data-me-lyrics-text]');
+  if (!path || !area) return;
+  const text = area.value.trim();
+  if (!text) { toast('歌词为空，没东西可写', true); return; }
+  try {
+    await api('/api/library/lyrics', {
+      method: 'PUT', body: { path, lyrics: text, dry_run: false },
+    });
+    mediaLyricsState(path).text = text;
+    toast('歌词已写入');
+    pushSessionLog('写入歌词', '歌词', path);
+    await refreshLibraryTrack(path);
+    paintLibraryBody();
+    refreshMediaEditor();
+  } catch (error) { toast(error.message, true); }
+}
+
+/** LRC 解析：[mm:ss.xx] 时间轴 → 逐行；解析不到时间轴就按纯文本返回。 */
+function parseLrc(text) {
+  const rows = [];
+  const stamp = /^\s*((?:\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\])+)\s*(.*)$/;
+  String(text || '').split(/\r?\n/).forEach((line) => {
+    const match = line.match(stamp);
+    if (!match) {
+      if (line.trim()) rows.push({ stamp: '', text: line.trim() });
+      return;
+    }
+    const times = match[1].match(/\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]/g) || [];
+    times.forEach((time) => {
+      rows.push({ stamp: time.replace(/[[\]]/g, ''), text: match[2].trim() });
+    });
+  });
+  const isLrc = rows.some((row) => row.stamp);
+  return { isLrc, rows };
+}
+
+/* ---- 时光机：本次会话内的操作；后端没有历史接口，不做任何伪造 ---- */
+function paintMediaTimeline(track) {
+  const box = mediaEditorNode()?.querySelector('[data-me-body]');
+  if (!box) return;
+  const rows = sessionLogFor(track.path);
+  box.innerHTML = `
+    <div class="me-timeline">
+      <div class="me-block-head">
+        <span class="field-label">本次会话的操作</span>
+        <span class="badge">${rows.length ? `${rows.length} 条` : '暂无记录'}</span>
+      </div>
+      ${rows.length
+        ? `<ol class="me-timeline-list">${rows.map((row) => `<li class="me-timeline-item">
+            <span class="me-timeline-dot"></span>
+            <div class="me-timeline-main">
+              <div class="me-timeline-title">${esc(row.action)}</div>
+              <div class="small muted">${esc(row.fields || '—')}</div>
+            </div>
+            <span class="me-timeline-time mono">${esc(row.at)}</span>
+          </li>`).join('')}</ol>`
+        : '<div class="empty">暂无修改历史<br><span class="tiny">此音频文件尚未产生任何修改记录</span></div>'}
+      <p class="small muted me-timeline-foot">后端没有提供文件的修改历史接口，这里只记录本次会话内做过的写入操作（写入标签、写入歌词…），刷新页面后清空。</p>
+    </div>`;
+}
+
+/** 事件只绑一次：反复开关编辑器不会叠加监听。 */
+function bindMediaEditor() {
+  const node = mediaEditorNode();
+  if (!node || node.dataset.bound === '1') return;
+  node.dataset.bound = '1';
+  node.addEventListener('click', (event) => {
+    if (event.target === node) closeMediaEditor();  // 点遮罩关闭
+  });
+  node.querySelector('[data-me-close]')?.addEventListener('click', closeMediaEditor);
+  node.querySelectorAll('[data-me-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.dataset.meTab !== editor.tab) switchMediaTab(button.dataset.meTab);
+    });
+  });
 }
 
 /** 一条候选：左侧 1–10 匹配度（ok / warn / bad 三色），右侧元数据 + 可补字段。 */
@@ -1073,59 +1487,6 @@ function scrapeResultCard(item, index) {
       <button class="primary-btn small" data-scrape-apply="${index}" data-dry="0">写入标签</button>
     </div>
   </article>`;
-}
-
-async function searchLibrary() {
-  const scrape = state.library.scrape;
-  if (!scrape.path) return;
-  const box = $('scrape-results');
-  box.innerHTML = '<div class="empty">正在搜索…</div>';
-  try {
-    const payload = await api('/api/library/search', {
-      method: 'POST',
-      body: {
-        path: scrape.path,
-        source: scrape.source || '',
-        title: $('scrape-title').value.trim(),
-        artist: $('scrape-artist').value.trim(),
-        album: $('scrape-album').value.trim(),
-      },
-    });
-    scrape.results = payload.results || [];
-    scrape.query = payload.query || {};
-    box.innerHTML = scrape.results.length
-      ? `<p class="small muted">在 ${(payload.searched || []).map(sourceLabel).map(esc).join(' / ') || '所选平台'} 搜到 ${scrape.results.length} 条结果</p>`
-        + scrape.results.map(scrapeResultCard).join('')
-      : `<div class="empty">${esc(payload.searched && payload.searched.length ? '没有搜到结果，换个平台或改改搜索词试试' : '没有可用的来源平台，请先在设置里启用')}</div>`;
-    box.querySelectorAll('[data-scrape-apply]').forEach((button) => {
-      button.addEventListener('click', () => {
-        const item = scrape.results[Number(button.dataset.scrapeApply)];
-        applyScrapeResult(item, button.dataset.dry === '1');
-      });
-    });
-  } catch (error) {
-    box.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
-  }
-}
-
-async function applyScrapeResult(item, dryRun) {
-  if (!item) return;
-  const path = state.library.scrape.path;
-  try {
-    const payload = await api('/api/library/apply', {
-      method: 'POST',
-      body: { path, metadata: item.metadata, dry_run: dryRun },
-    });
-    const labels = (payload.written_labels && payload.written_labels.length
-      ? payload.written_labels
-      : payload.would_write_labels || []).join('、');
-    toast(payload.message || (labels ? `补全：${labels}` : '没有可写入的字段'), !dryRun && !labels);
-    if (!dryRun) {
-      closeModal();
-      await refreshLibraryTrack(path);
-      paintLibraryBody();
-    } else if (labels) toast(`预览：将补全 ${labels}（文件位置不变）`);
-  } catch (error) { toast(error.message, true); }
 }
 
 /* ---- 批量补全 / 只补这一首：只写标签，不动文件位置 ---- */
@@ -1168,13 +1529,13 @@ async function fillOne(path) {
     const labels = (row.written || []).map(fieldName).join('、');
     toast(labels ? `已补全：${labels}` : (payload.message || '没有可补的字段'), !labels);
     if (labels) {
-      closeModal();
+      pushSessionLog('只补这一首', labels, path);
       await refreshLibraryTrack(path);
       paintLibraryBody();
+      if (mediaEditorOpen() && editor.path === path) refreshMediaEditor();
       return;
     }
-    state.library.loaded = false;
-    await renderLibrary();
+    if (!mediaEditorOpen()) { state.library.loaded = false; await renderLibrary(); }
   } catch (error) { toast(error.message, true); }
 }
 
@@ -2320,13 +2681,15 @@ $('picker-confirm').addEventListener('click', () => {
   closePicker();
   toast('已选择文件夹，记得保存设置');
 });
+bindMediaEditor();
 $('drawer-close').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (event) => {
   if (event.target === $('drawer')) closeDrawer();
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!$('drawer').classList.contains('hidden')) closeDrawer();
+  if (mediaEditorOpen()) closeMediaEditor();
+  else if (!$('drawer').classList.contains('hidden')) closeDrawer();
   else if (!$('picker').classList.contains('hidden')) closePicker();
   else if (!$('modal').classList.contains('hidden')) closeModal();
 });
