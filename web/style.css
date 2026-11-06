@@ -420,6 +420,118 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .mini-sub { font-size: var(--fs-footnote); color: var(--text-3); overflow-wrap: anywhere; }
 .mini-side { flex: none; display: flex; align-items: center; gap: 8px; font-size: var(--fs-footnote); color: var(--text-3); }
 
+/* ---------- 概览：快捷入口 + 音乐库概览 + 最近入库 ---------- */
+/* 版面用「行 + 行内弹性」而不是固定列数的栅格：每行自己是一份 flex，
+ * 行尾挂一块净宽 0 的 .dash-fill 吃掉取整剩下的像素，所以任意宽度下都不会留半行空洞。 */
+.dash-board { display: flex; flex-direction: column; gap: var(--gap); }
+/* 负外边距铺满的「行内项目」：项目多分到半条缝（内容盒），
+ * 卡片自己再吃掉这半条缝，于是两张卡的描边正好隔一条缝、两端顶齐，四周不留白。 */
+.dash-row {
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  margin: 0 calc(var(--gap) / -2); min-width: 0;
+}
+.dash-row > * {
+  flex: var(--col, 1 1 260px); min-width: 0;
+  margin-inline: calc(var(--gap) / -2);
+  box-sizing: content-box;
+}
+/* 列表类卡片（概览 / 最近入库 / 最近任务 / 最近整理 / 账号与刮削磁贴）让填充色铺到
+ * 行内内边距底下：字号变大时这些卡的内容会撑高整行，底色顶到边才不露缝。
+ * 内容跟着变高的卡（快捷磁贴、计数卡）不需要，用 .pad-card 还原成普通卡片。 */
+.dash-row > .panel {
+  padding-inline: calc(clamp(16px, 1.6vw, 22px) + var(--gap) / 2);
+  background-clip: padding-box;
+}
+.dash-row > .panel.pad-card { padding-inline: clamp(16px, 1.6vw, 22px); background-clip: border-box; }
+/* 装饰性的收尾块：不该有任何可见宽度、间距或背景 */
+.dash-row > .dash-fill { flex: 0 1 0; margin: 0; padding: 0; }
+/* 行内卡片内部仍是纵向流：头部一行，下面各段自上而下排 */
+.dash-row > .panel { display: flex; flex-direction: column; }
+/* 常见分栏：7:5 是「宽卡 + 侧卡」，三张计数卡等宽 */
+.dash-row-7-5 > .dash-library, .dash-row-7-5 > .dash-jobs { --col: 7 1 420px; }
+.dash-row-7-5 > .dash-recent, .dash-row-7-5 > .dash-done { --col: 5 1 340px; }
+.dash-quick > .quick-tile { --col: 1 1 160px; }
+.dash-row-counts > .dash-count { --col: 1 1 220px; }
+/* 放不下时整行一起折成上下两行，不留半行 */
+@media (max-width: 1180px) {
+  .dash-row-7-5 > .dash-library, .dash-row-7-5 > .dash-jobs { --col: 1 1 460px; }
+  .dash-row-7-5 > .dash-recent, .dash-row-7-5 > .dash-done { --col: 1 1 320px; }
+}
+.quick-tile {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 0; padding: 14px;
+  font-family: inherit; text-align: left; color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--transition), transform var(--transition), background var(--transition);
+}
+.quick-tile:hover { transform: translateY(-2px); border-color: var(--primary); }
+.quick-tile:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.quick-icon {
+  flex: none; display: grid; place-items: center;
+  width: 40px; height: 40px; border-radius: 13px;
+  background: var(--primary-soft); color: var(--primary-soft-text);
+}
+.quick-icon .icon { width: 21px; height: 21px; }
+.quick-label {
+  flex: 1; min-width: 0; font-size: var(--fs-body);
+  font-weight: var(--wght-heading); font-variation-settings: 'wght' var(--wght-heading);
+  overflow-wrap: anywhere;
+}
+/* 计数卡里的进度条贴到底部，和数字、说明连成一条 */
+.dash-count-bar { height: 8px; margin: 2px 0; }
+
+/* 库概览的统计数字一排三个，窄屏自动落成一行 */
+.dash-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.dash-number { min-width: 0; padding: 10px 12px; border-radius: var(--radius-item); background: var(--surface-2); }
+.dash-number-value {
+  font-size: clamp(22px, 1.4vw + 16px, 30px);
+  font-weight: var(--wght-display); font-variation-settings: 'wght' var(--wght-display);
+  line-height: 1.15;
+}
+.dash-number-label { font-size: var(--fs-footnote); color: var(--text-3); margin-top: 2px; }
+.dash-rates { display: grid; gap: 12px; }
+.dash-rate { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.dash-rate-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: var(--fs-small); }
+.dash-rate-head b { font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button); }
+.dash-rate-bar { height: 8px; }
+.dash-rate-note { font-size: var(--fs-footnote); color: var(--text-3); }
+.dash-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--divider);
+}
+.dash-pending { font-size: var(--fs-small); color: var(--text-2); }
+.dash-pending b { font-weight: var(--wght-button); font-variation-settings: 'wght' var(--wght-button); }
+.dash-pending b.ok { color: var(--ok); }
+.dash-pending b.warn { color: var(--warn); }
+.dash-empty-note { margin-top: 10px; text-align: center; overflow-wrap: anywhere; }
+.dash-retry { align-self: center; margin-top: 10px; }
+/* 最近入库：32px 方形封面（外层带底色，无封面 / 加载失败时碟片占位就是全部） */
+.dash-thumb {
+  flex: none; position: relative; display: grid; place-items: center;
+  width: 32px; height: 32px; border-radius: 9px; overflow: hidden;
+  background: var(--surface-3); color: var(--text-3);
+}
+.dash-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.dash-thumb .icon { width: 18px; height: 18px; }
+.dash-recent-row .mini-side span { white-space: nowrap; }
+@media (max-width: 620px) {
+  .dash-foot { flex-wrap: wrap; }
+  .mini-side { flex-wrap: wrap; justify-content: flex-end; }
+}
+
+/* ---------- 设置页：转移方式可用性 ---------- */
+.cap-paths { display: grid; gap: 10px; margin-bottom: 12px; }
+.cap-path {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 12px; border-radius: var(--radius-item); background: var(--surface-2);
+}
+.cap-path-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cap-path-value { min-width: 0; font-size: var(--fs-small); overflow-wrap: anywhere; }
+.cap-same { font-size: var(--fs-small); color: var(--text-2); margin-bottom: 12px; }
+.cap-same.ok { color: var(--ok); }
+.cap-same.bad { color: var(--danger); }
+.cap-error { margin-top: 8px; text-align: center; overflow-wrap: anywhere; }
+
 /* 转移方式可用性：卡片网格，一方式一张，不再占满一条宽表 */
 .mode-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); }
 .mode-tile {
@@ -585,7 +697,20 @@ td.truncate { max-width: 260px; }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--surface-2); }
 td.th-key { color: var(--text-2); width: 130px; }
-.empty { padding: 34px 12px !important; text-align: center; color: var(--text-3); }
+.empty { padding: 34px 12px !important; text-align: center; color: var(--text-3); display: grid; place-items: center; gap: 10px; }
+/* 空态的轻量图标：矢量描边，透明度压到 0.45，字重不抢文案 */
+.empty-icon { width: 34px; height: 34px; color: var(--text-3); opacity: .45; display: grid; place-items: center; }
+.empty-icon .icon { width: 34px; height: 34px; }
+.empty-text { margin: 0; }
+/* 表格里的空态：整行仍是一行（图标与文案并排居中），图标压到 20px，行高不会被撑起来 */
+td.empty {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 22px 12px !important; white-space: nowrap;
+}
+.empty-inline { flex: none; display: grid; place-items: center; width: 20px; height: 20px; opacity: .45; }
+.empty-inline .icon { width: 20px; height: 20px; }
+td.empty .empty-text { display: inline; }
+.empty-action { justify-content: center; margin-top: 4px; }
 /* 任务明细：文件名与所在目录各占一行，长路径只压缩中间，首尾都看得见。 */
 /* 明细表列多且含双行路径，给一个下限，窄屏靠容器横向滚动而不是把字挤成竖排 */
 .items-table { min-width: 720px; }
@@ -624,6 +749,10 @@ td.th-key { color: var(--text-2); width: 130px; }
   background: var(--primary);
   transition: width 400ms ease;
 }
+/* 语义色进度条：封面 / 歌词覆盖率、完整度共用 */
+.progress > span.ok { background: var(--ok); }
+.progress > span.warn { background: var(--warn); }
+.progress > span.bad { background: var(--danger); }
 .banner {
   padding: 12px 16px;
   border-radius: var(--radius-item);
@@ -1566,7 +1695,8 @@ body.editor-open { overflow: hidden; } /* 编辑器自己滚，背后的列表�
   background: var(--surface-3);
   overflow: hidden;
 }
-.me-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* 封面完整显示：contain 保证非方形封面不被裁掉，四周留白用中性底色而不是黑 */
+.me-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--surface-2); }
 .me-cover img.hidden { display: none; }
 .me-cover-fallback {
   display: grid; place-items: center;
@@ -1603,8 +1733,6 @@ body.editor-open { overflow: hidden; } /* 编辑器自己滚，背后的列表�
   overflow-wrap: anywhere; line-height: 1.5;
   padding: 8px 10px; border-radius: var(--radius-item); background: var(--surface-3);
 }
-.me-player { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-.me-player-note { font-size: var(--fs-tiny); color: var(--text-3); text-align: center; }
 .me-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .me-tabs {
   display: flex; gap: 4px; flex: none;
@@ -1737,7 +1865,7 @@ body.editor-open { overflow: hidden; } /* 编辑器自己滚，背后的列表�
   .me-cover { margin: 0; }
   .me-cover-fallback .icon { width: 24px; height: 24px; }
   .me-side-names { text-align: left; }
-  .me-side-block, .me-player, .me-player-note { grid-column: 1 / -1; }
+  .me-side-block { grid-column: 1 / -1; }
   .me-side-block { gap: 6px; }
   .me-form, .me-scrape-form { grid-template-columns: minmax(0, 1fr); }
 }

@@ -9,6 +9,14 @@ function spriteIcon(name) {
   return `<svg class="icon" aria-hidden="true"><use href="#${name}"></use></svg>`;
 }
 
+/** 空态统一两段式：轻量图标 + 一句文案。表格单元格里用 emptyCell()，别把行撑高。 */
+function emptyBlock(icon, text) {
+  return `<div class="empty"><span class="empty-icon">${spriteIcon(icon)}</span><p class="empty-text">${esc(text)}</p></div>`;
+}
+function emptyCell(icon, text, colspan) {
+  return `<tr><td colspan="${colspan}" class="empty"><span class="empty-inline">${spriteIcon(icon)}</span><span class="empty-text">${esc(text)}</span></td></tr>`;
+}
+
 const NAV = [
   { group: '工作区' },
   { id: 'dashboard', label: '概览', icon: 'i-dashboard' },
@@ -21,7 +29,7 @@ const NAV = [
   { id: 'docs', label: '转移方式说明', icon: 'i-docs' },
 ];
 const PAGE_META = {
-  dashboard: ['概览', '目录状态、四种转移方式可用性与最近任务'],
+  dashboard: ['概览', '音乐库状态、任务与最近入库'],
   library: ['音乐库', '浏览库内所有曲目、手动刮削、自动扫描查漏补缺（只改标签，不动文件）'],
   files: ['源文件', '扫描源目录、选择文件并生成整理计划'],
   plan: ['整理计划', '先预览源 → 目标的映射，确认后再执行'],
@@ -51,7 +59,8 @@ const state = {
   watch: null,
   currentJobId: null,
   pollTimer: null,
-  capabilities: [],
+  // 转移方式可用性：设置页「转移方式可用性」面板单独缓存，读取失败时留 null 走空态
+  capabilities: { loaded: false, loading: false, error: '', data: null },
   options: { organize: true, skipLowConfidence: false },
   picker: { target: null, path: '', root: '', parent: null, entries: [], loading: false },
   plan: { jobId: null, items: [], choices: new Map(), filter: 'all' },
@@ -61,6 +70,8 @@ const state = {
     filter: 'all', lyricFilter: 'all', coverFilter: 'all', genre: '', query: '',
     tab: 'tracks', view: localStorage.getItem('mp-lib-view') || 'table',
     page: 1, pageSize: Number(localStorage.getItem('mp-lib-size')) || 50, openGroup: '',
+    // 概览的短时缓存：{ at, stats, tracks, sources }，60s 内重复进概览不再请求 /api/library
+    dashCache: null,
   },
   drawer: { jobId: null, items: [] },
 };
@@ -391,38 +402,72 @@ function statusBadge(status) {
   return `<span class="badge ${tone}">${esc(label)}</span>`;
 }
 
+/* ---------------- 概览：快捷入口 + 音乐库概览 + 最近入库 + 最近任务 ---------------- */
+/* 概览只读现有接口：/api/dashboard 管任务与账号，/api/library 管库统计与最近入库。
+ * 库数据先用音乐库页 / 上次概览留下的缓存，没有或过了 DASH_LIBRARY_TTL 才请求，
+ * 免得每次点进概览都把整库标签重扫一遍。两个请求各自降级，任何一个挂了都不影响整页。 */
+const DASH_LIBRARY_TTL = 60 * 1000;
+
+/** 概览要用的库数据：音乐库页扫过的（或 60s 内的概览缓存）直接复用，返回 null 表示得去请求。 */
+function dashboardLibraryCache() {
+  const store = state.library;
+  if (store.loaded) return { stats: store.stats, tracks: store.tracks, sources: store.sources };
+  const cached = store.dashCache;
+  if (cached && Date.now() - cached.at < DASH_LIBRARY_TTL) return cached;
+  return null;
+}
+function rememberDashboardLibrary(lib) {
+  state.library.dashCache = {
+    at: Date.now(), stats: lib.stats || {}, tracks: lib.tracks || [], sources: lib.sources || [],
+  };
+}
+
 async function renderDashboard() {
-  let data;
-  try { data = await api('/api/dashboard'); }
-  catch (error) { toast(error.message, true); return; }
-  state.capabilities = data.capabilities;
-  const same = data.same_device;
+  // 两个请求并行：库数据有缓存就直接用，有错误各自带着，面板单独降级
+  const cached = dashboardLibraryCache();
+  const [board, listing] = await Promise.all([
+    api('/api/dashboard').then((value) => ({ value })).catch((error) => ({ error })),
+    cached ? Promise.resolve({ value: cached }) : api('/api/library')
+      .then((value) => { rememberDashboardLibrary(value); return { value }; })
+      .catch((error) => ({ error })),
+  ]);
+  if (board.error) { toast(board.error.message, true); return; }
+  const data = board.value;
   const watch = state.watch || {};
-  // 路径类的值最长，跨两格放才不至于把目录从中间折断
-  const cards = [
-    ['源目录', data.source_dir, data.source_exists ? 'ok' : 'bad', data.source_exists ? '目录可访问' : '目录不存在，请检查挂载', 'span-2'],
-    ['音乐库目录', data.library_dir, data.library_exists ? 'ok' : 'bad', data.library_exists ? '目录可访问' : '首次执行时自动创建', 'span-2'],
-    ['转移方式', modeLabel(state.settings.transfer_mode), 'warn', same === null ? '等待目录就绪' : (same ? '源与库在同一挂载点 · 可用硬链接' : '源与库跨挂载点 · 硬链接不可用')],
-    ['当前账号', state.auth.username || '—', 'ok', state.auth.is_admin ? '管理员 · 会话保护已开启' : '普通账号 · 会话保护已开启'],
-    ['自动刮削', watch.enabled ? '已开启' : '已关闭', watch.enabled ? 'ok' : 'warn',
-      watch.enabled
-        ? `每 ${Math.round(watch.interval || 30)} 秒检查源目录${watch.tracked ? ` · 已记录 ${watch.tracked} 个文件` : ''}${watch.in_library ? ` · 库内 ${watch.in_library} 个已过滤` : ''}`
-        : '开启后只刮库里还没有的新文件'],
-  ];
-  // Bento：目录与账号这类「值可能很长」的磁贴跨两格，短值的一组安放在剩余格子里
-  const tiles = cards.map(([label, value, tone, note, span]) => `
-    <div class="panel stat stat-panel${span ? ` ${span}` : ''}">
-      <div class="stat-label">${esc(label)}</div>
-      <div class="stat-value ${tone}">${esc(value)}</div>
-      <div class="stat-note">${esc(note)}</div></div>`).join('');
-  const modeTiles = data.capabilities.map((item) => `
-    <div class="mode-tile">
-      <div class="mode-tile-head">
-        <b>${esc(item.label)}</b>
-        <span>${capabilityBadge(item)}${item.probed ? ' <span class="tiny">已自检</span>' : ''}</span>
+  const libError = listing.error ? listing.error.message || '请稍后重试或检查音乐库目录' : '';
+  const lib = listing.value || {};
+  const stats = lib.stats || {};
+  const tracks = lib.tracks || [];
+  const sources = (lib.sources || []).filter((item) => item.enabled);
+
+  const quickTiles = [
+    ['files', '源文件', 'i-files'],
+    ['plan', '整理计划', 'i-plan'],
+    ['jobs', '任务记录', 'i-jobs'],
+    ['settings', '刮削设置', 'i-settings'],
+  ].map(([page, label, icon]) => `
+      <button class="panel quick-tile pad-card" type="button" data-go="${page}">
+        <span class="quick-icon">${spriteIcon(icon)}</span>
+        <span class="quick-label">${esc(label)}</span>
+      </button>`).join('');
+
+  const accountPanel = `
+    <div class="dash-row dash-row-7-5">
+      <div class="panel stat stat-panel dash-account">
+        <div class="stat-label">当前账号</div>
+        <div class="stat-value ok">${esc(state.auth.username || '—')}</div>
+        <div class="stat-note">${esc(state.auth.is_admin ? '管理员 · 会话保护已开启' : '普通账号 · 会话保护已开启')}</div>
       </div>
-      <p>${esc(item.reason)}</p>
-    </div>`).join('');
+      <div class="panel stat stat-panel dash-watch">
+        <div class="stat-label">自动刮削</div>
+        <div class="stat-value ${watch.enabled ? 'ok' : 'warn'}">${esc(watch.enabled ? '已开启' : '已关闭')}</div>
+        <div class="stat-note">${esc(watch.enabled
+          ? `每 ${Math.round(watch.interval || 30)} 秒检查源目录${watch.tracked ? ` · 已记录 ${watch.tracked} 个文件` : ''}${watch.in_library ? ` · 库内 ${watch.in_library} 个已过滤` : ''}`
+          : '开启后只刮库里还没有的新文件')}</div>
+      </div>
+      <span class="dash-fill" aria-hidden="true"></span>
+    </div>`;
+
   const jobRows = (data.jobs || []).map((job) => `
     <div class="mini-row">
       <div class="mini-main">
@@ -440,41 +485,146 @@ async function renderDashboard() {
       <div class="mini-side"><span>${esc(fmtTime(item.created_at))}</span></div>
     </div>`).join('');
 
+  /* 版面是「行 + 行内弹性」：每行都是一份 flex，行内卡片按 flex-basis 分宽度，
+   * 行尾放一块净宽 0 的 .dash-fill 吃掉多余像素，缩放到任何宽度都不会留半行空洞。 */
   $('page').innerHTML = `
-    <div class="bento">
-      ${tiles}
-      <div class="panel span-2">
-        <div class="panel-head">
-          <div><h2>四种转移方式可用性</h2><p>硬链接要求源目录与音乐库位于同一文件系统 / 同一挂载点</p></div>
-          <div class="btn-row">
-            <button class="ghost-btn small" id="probe-btn">运行写入自检</button>
-            <button class="ghost-btn small" data-go="settings">更改目录</button>
-          </div>
+    <div class="dash-board">
+      <div class="dash-row dash-quick">${quickTiles}<span class="dash-fill" aria-hidden="true"></span></div>
+      <div class="dash-row dash-row-7-5">
+        <div class="panel dash-library" id="dash-library">
+          <div class="panel-head"><div><h2>音乐库概览</h2>
+            <p>曲目、专辑、歌手与封面 / 歌词覆盖率</p></div>
+            <button class="ghost-btn small" data-go="library">打开音乐库</button></div>
+          ${libError ? `
+            ${emptyBlock('i-library', '音乐库统计读取失败')}
+            <p class="small muted dash-empty-note">${esc(libError)}</p>
+            <button class="ghost-btn small dash-retry" id="dash-retry">重新读取</button>`
+            : dashLibraryHtml(stats)}
         </div>
-        <div class="mode-grid">${modeTiles}</div>
-        <p class="small muted" style="margin:14px 0 0">自检会在两个目录各创建一个临时文件并立即删除，用于确认写权限以及硬链接 / 符号链接是否被文件系统支持。</p>
+        <div class="panel dash-recent" id="dash-recent">
+          <div class="panel-head"><div><h2>最近入库</h2>
+            <p>按文件修改时间倒序的前 ${DASH_RECENT_LIMIT} 首</p></div>
+            <button class="ghost-btn small" data-go="library">查看全部</button></div>
+          ${libError ? emptyBlock('i-clock', '最近入库读取失败') : dashRecentHtml(tracks)}
+        </div>
       </div>
-      <div class="panel span-2">
-        <div class="panel-head"><h2>最近任务</h2>
-          <button class="ghost-btn" data-go="jobs">查看全部</button></div>
-        ${jobRows || '<div class="empty">暂无任务</div>'}
+      <div class="dash-row dash-row-7-5">
+        <div class="panel dash-jobs">
+          <div class="panel-head"><div><h2>最近任务</h2></div>
+            <button class="ghost-btn" data-go="jobs">查看全部</button></div>
+          ${jobRows || emptyBlock('i-jobs', '暂无任务')}
+        </div>
+        <div class="panel dash-done">
+          <div class="panel-head"><div><h2>最近整理</h2>
+            <p>确认后的文件按当前转移方式落库</p></div></div>
+          ${recentRows || emptyBlock('i-plan', '暂无整理记录')}
+        </div>
       </div>
-      <div class="panel span-2">
-        <div class="panel-head"><h2>最近整理</h2>
-          <p>确认后的文件按当前转移方式落库</p></div>
-        ${recentRows || '<div class="empty">暂无整理记录</div>'}
+      ${accountPanel}
+      <div class="dash-row dash-row-counts">
+        ${libError
+          ? `<div class="panel stat stat-panel dash-count pad-card">${emptyBlock('i-spark', '音乐库统计读取失败')}</div>`
+          : `${dashCompleteCard(stats)}${dashSourceCard(sources)}`}
+        <span class="dash-fill" aria-hidden="true"></span>
       </div>
     </div>`;
-  $('probe-btn').addEventListener('click', async () => {
-    try {
-      const result = await api('/api/system/capabilities', { method: 'POST', body: { probe: true } });
-      state.capabilities = result.modes;
-      await renderDashboard();
-      toast('写入自检完成');
-    } catch (error) { toast(error.message, true); }
-  });
-  document.querySelectorAll('[data-go]').forEach((button) => {
+  bindCoverFallback($('page'));
+  document.querySelectorAll('#page [data-go]').forEach((button) => {
     button.addEventListener('click', () => go(button.dataset.go));
+  });
+  // 读失败是缓存里的失败：清掉它再重画，否则点重试还是拿到同一份缓存
+  const retry = $('dash-retry');
+  if (retry) retry.onclick = () => { state.library.dashCache = null; renderDashboard(); };
+}
+
+/** 库完整率：字段都齐的曲目占全库的比例，和音乐库页的「完整率」同一个算法。 */
+function dashCompleteCard(stats) {
+  const total = Number(stats.tracks) || 0;
+  const incomplete = Number(stats.incomplete) || 0;
+  const rate = total ? Math.round((100 * (total - Math.min(incomplete, total))) / total) : null;
+  return `
+    <div class="panel stat stat-panel dash-count pad-card">
+      <div class="stat-label">库完整率</div>
+      <div class="stat-value">${rate === null ? '—' : `${rate}%`}</div>
+      <div class="progress dash-count-bar"><span class="${dashRateTone(rate)}" style="width:${rate === null ? 0 : rate}%"></span></div>
+      <div class="stat-note">${total ? `${total - Math.min(incomplete, total)} / ${total} 首字段齐全` : '库里还没有曲目'}</div>
+    </div>`;
+}
+/** 元数据来源：已启用的刮削音源；一个都没启用时把这张卡让给其余三张，不留空块。 */
+function dashSourceCard(sources) {
+  if (!sources.length) return '';
+  return `
+    <div class="panel stat stat-panel dash-count pad-card">
+      <div class="stat-label">元数据来源</div>
+      <div class="stat-value">${esc(String(sources.length))}</div>
+      <div class="stat-note">${esc(sources.map((item) => item.label).join(' · '))}</div>
+    </div>`;
+}
+
+const DASH_RECENT_LIMIT = 6;
+
+/** 概览的库统计：三个数字 + 封面 / 歌词覆盖率进度条 + 待补全入口。数据全部来自 /api/library。 */
+function dashLibraryHtml(stats) {
+  const total = Number(stats.tracks) || 0;
+  const covers = Number(stats.with_cover) || 0;
+  const lyrics = Number(stats.with_lyrics) || 0;
+  const incomplete = Number(stats.incomplete) || 0;
+  const pct = (value) => (total ? Math.round((100 * value) / total) : null);
+  const coverRate = pct(covers);
+  const lyricRate = pct(lyrics);
+  const numbers = [
+    ['曲目', total], ['专辑', Number(stats.albums) || 0], ['歌手', Number(stats.artists) || 0],
+  ].map(([label, value]) => `
+    <div class="dash-number"><div class="dash-number-value">${esc(String(value))}</div>
+      <div class="dash-number-label">${esc(label)}</div></div>`).join('');
+  const bar = (label, value, rate) => `
+    <div class="dash-rate">
+      <div class="dash-rate-head"><span>${esc(label)}</span>
+        <b>${rate === null ? '—' : `${rate}%`}</b></div>
+      <div class="progress dash-rate-bar"><span class="${dashRateTone(rate)}" style="width:${rate === null ? 0 : rate}%"></span></div>
+      <div class="dash-rate-note">${total ? `${value} / ${total} 首` : '—'}</div>
+    </div>`;
+  return `
+    <div class="dash-numbers">${numbers}</div>
+    <div class="dash-rates">
+      ${bar('有封面', covers, coverRate)}
+      ${bar('有歌词', lyrics, lyricRate)}
+    </div>
+    <div class="dash-foot">
+      <span class="dash-pending">待补全 <b class="${incomplete ? 'warn' : 'ok'}">${esc(String(incomplete))}</b> 首</span>
+      <button class="ghost-btn small" data-go="library">去音乐库补全</button>
+    </div>`;
+}
+/** 覆盖率配色沿用语义色：≥85% 绿、60% 起黄、其余红；没有曲目时不上色。 */
+function dashRateTone(rate) {
+  if (rate === null) return '';
+  return rate >= 85 ? 'ok' : rate >= 60 ? 'warn' : 'bad';
+}
+
+function dashRecentHtml(tracks) {
+  const recent = [...tracks]
+    .filter((track) => Number(track.modified_at) > 0)
+    .sort((a, b) => Number(b.modified_at) - Number(a.modified_at))
+    .slice(0, DASH_RECENT_LIMIT);
+  if (!recent.length) return emptyBlock('i-clock', '还没有入库曲目');
+  return recent.map((track) => `
+    <div class="mini-row dash-recent-row">
+      <span class="dash-thumb">${track.cover_url
+        ? `<img src="${esc(track.cover_url)}" alt="" loading="lazy" data-cover-fallback>${spriteIcon('i-disc')}`
+        : spriteIcon('i-disc')}</span>
+      <div class="mini-main">
+        <div class="mini-title" title="${esc(track.path)}">${esc(track.title || track.name)}</div>
+        <div class="mini-sub">${esc([track.artist, track.album].filter(Boolean).join(' · ') || '歌手 / 专辑待补全')}</div>
+      </div>
+      <div class="mini-side"><span>${esc(fmtTime(track.modified_at))}</span></div>
+    </div>`).join('');
+}
+
+/** 封面加载失败就地退回碟片占位，不留破图。 */
+function bindCoverFallback(root) {
+  if (!root) return;
+  root.querySelectorAll('img[data-cover-fallback]').forEach((img) => {
+    img.addEventListener('error', () => { img.remove(); }, { once: true });
   });
 }
 
@@ -611,7 +761,7 @@ function libraryTable(tracks) {
         <th class="lib-col-genre">流派</th><th class="lib-col-format">格式</th><th class="lib-col-complete">完整度</th>
         <th class="lib-col-lyrics">歌词</th><th class="lib-col-state">状态</th><th class="lib-col-actions">操作</th>
       </tr></thead>
-      <tbody>${rows || `<tr><td colspan="9" class="empty">当前筛选条件下没有曲目</td></tr>`}</tbody></table></div>`;
+      <tbody>${rows || emptyCell('i-funnel', '当前筛选条件下没有曲目', 9)}</tbody></table></div>`;
 }
 
 /* ---- 网格视图：左封面右文字的横条小卡，比原来的竖排大卡片矮一半 ---- */
@@ -639,7 +789,7 @@ function libraryCard(track, index) {
 }
 function libraryGrid(tracks) {
   return `<div class="lib-tags">${tracks.map(libraryCard).join('')
-    || '<div class="empty">当前筛选条件下没有曲目</div>'}</div>`;
+    || emptyBlock('i-funnel', '当前筛选条件下没有曲目')}</div>`;
 }
 
 /* ---- 分组视图：歌手 / 流派 / 专辑按标签聚合，点开即可看组内曲目 ---- */
@@ -680,7 +830,7 @@ function libraryGroups(tracks) {
       ${isOpen ? `<div class="lib-group-body">${items}</div>` : ''}
     </div>`;
   }).join('');
-  return `<div class="lib-groups">${blocks || '<div class="empty">当前筛选条件下没有分组</div>'}</div>`;
+  return `<div class="lib-groups">${blocks || emptyBlock('i-funnel', '当前筛选条件下没有分组')}</div>`;
 }
 
 /* ---- 分页 ---- */
@@ -850,7 +1000,7 @@ function bindLibraryActions() {
     paintLibraryBody();
   };
   const refresh = $('lib-refresh');
-  if (refresh) refresh.onclick = () => { store.loaded = false; renderLibrary(); };
+  if (refresh) refresh.onclick = () => { invalidateLibrary(); renderLibrary(); };
   // 「待补全」统计卡：点一下直接落到待补全筛选
   document.querySelectorAll('[data-lib-stat="incomplete"]').forEach((card) => {
     const jump = () => {
@@ -1043,7 +1193,7 @@ function paintMediaSide() {
   const box = mediaEditorNode()?.querySelector('[data-me-info]');
   const track = mediaTrack();
   if (!box) return;
-  if (!track) { box.innerHTML = '<div class="empty">曲目已不在列表中</div>'; return; }
+  if (!track) { box.innerHTML = emptyBlock('i-disc', '曲目已不在列表中'); return; }
   const percent = trackCompleteness(track);
   const missing = (track.missing || []).map(fieldName);
   const pending = missing;
@@ -1088,10 +1238,7 @@ function paintMediaSide() {
           <span>${esc(label)}</span><b>${esc(value)}</b></div>`).join('')}
       </div>
       <div class="me-path mono" title="${esc(track.path)}">${esc(track.path)}</div>
-    </div>
-    <button class="ghost-btn block me-player" type="button" disabled title="本项目暂无播放器" aria-disabled="true">
-      ${spriteIcon('i-play')}打开沉浸式播放器</button>
-    <p class="me-player-note">本项目暂无播放器</p>`;
+    </div>`;
 
   box.querySelector('img[data-me-cover]')?.addEventListener('error', (event) => {
     event.currentTarget.classList.add('hidden');
@@ -1103,7 +1250,7 @@ function paintMediaBody(tab) {
   const box = mediaEditorNode()?.querySelector('[data-me-body]');
   if (!box) return;
   const track = mediaTrack();
-  if (!track) { box.innerHTML = '<div class="empty">曲目已不在列表中</div>'; return; }
+  if (!track) { box.innerHTML = emptyBlock('i-disc', '曲目已不在列表中'); return; }
   if (tab === 'scrape') { paintMediaScrape(track); return; }
   if (tab === 'lyrics') { paintMediaLyrics(track); return; }
   if (tab === 'timeline') { paintMediaTimeline(track); return; }
@@ -1205,8 +1352,8 @@ function paintMediaScrape(track) {
   const results = scrape.results.length
     ? `<div class="scrape-results">${scrape.results.map(scrapeResultCard).join('')}</div>`
     : (scrape.searched
-      ? `<div class="empty">${esc(scrape.searched.hint)}</div>`
-      : '<div class="empty">填好搜索词后点「搜索」，结果按 1–10 匹配度排序</div>');
+      ? emptyBlock('i-search', scrape.searched.hint)
+      : emptyBlock('i-search', '填好搜索词后点「搜索」，结果按 1–10 匹配度排序'));
   box.innerHTML = `
     <div class="me-scrape">
       <p class="small muted">文件：<span class="mono">${esc(track.path)}</span></p>
@@ -1257,7 +1404,7 @@ async function searchLibrary() {
   const artist = box.querySelector('#scrape-artist')?.value.trim() || '';
   const album = box.querySelector('#scrape-album')?.value.trim() || '';
   const holder = box.querySelector('#scrape-results');
-  if (holder) holder.innerHTML = '<div class="empty">正在搜索…</div>';
+  if (holder) holder.innerHTML = emptyBlock('i-search', '正在搜索…');
   scrape.loading = true;
   try {
     const payload = await api('/api/library/search', {
@@ -1323,15 +1470,15 @@ function paintMediaLyrics(track) {
   let lines = { isLrc: false, rows: [] };
   try { lines = parseLrc(text); } catch { lines = { isLrc: false, rows: [] }; }
   const preview = lyr.loading
-    ? '<div class="empty">正在读取歌词…</div>'
+    ? emptyBlock('i-lyrics', '正在读取歌词…')
     : lyr.error
-      ? `<div class="empty">${esc(lyr.error)}</div>`
+      ? emptyBlock('i-lyrics', lyr.error)
       : (text.trim()
         ? (lines.isLrc
           ? `<div class="me-lyrics-preview">${lines.rows.map((row) => `<div class="me-lrc-line${row.text ? '' : ' blank'}">
               <span class="me-lrc-time mono">${esc(row.stamp)}</span><span>${esc(row.text || ' ')}</span></div>`).join('')}</div>`
           : `<pre class="me-lyrics-raw">${esc(text)}</pre>`)
-        : '<div class="empty">该文件没有歌词，可在下方粘贴后保存</div>');
+        : emptyBlock('i-lyrics', '该文件没有歌词，可在下方粘贴后保存'));
   box.innerHTML = `
     <div class="me-lyrics">
       <div class="me-lyrics-note small muted">
@@ -1443,7 +1590,7 @@ function paintMediaTimeline(track) {
             </div>
             <span class="me-timeline-time mono">${esc(row.at)}</span>
           </li>`).join('')}</ol>`
-        : '<div class="empty">暂无修改历史<br><span class="tiny">此音频文件尚未产生任何修改记录</span></div>'}
+        : emptyBlock('i-clock', '暂无修改历史 · 此音频文件尚未产生任何修改记录')}
       <p class="small muted me-timeline-foot">后端没有提供文件的修改历史接口，这里只记录本次会话内做过的写入操作（写入标签、写入歌词…），刷新页面后清空。</p>
     </div>`;
 }
@@ -1513,7 +1660,7 @@ async function autoFillLibrary() {
       body: { sources: sources.map((item) => item.id) },
     });
     toast(payload.message || `已补全 ${payload.filled} 首`);
-    state.library.loaded = false;
+    invalidateLibrary();
     await renderLibrary();
   } catch (error) { toast(error.message, true); }
 }
@@ -1535,7 +1682,7 @@ async function fillOne(path) {
       if (mediaEditorOpen() && editor.path === path) refreshMediaEditor();
       return;
     }
-    if (!mediaEditorOpen()) { state.library.loaded = false; await renderLibrary(); }
+    if (!mediaEditorOpen()) { invalidateLibrary(); await renderLibrary(); }
   } catch (error) { toast(error.message, true); }
 }
 
@@ -1545,7 +1692,7 @@ async function refreshLibraryTrack(path) {
     const detail = await api(`/api/library/detail?path=${encodeURIComponent(path)}`);
     const row = (state.library.tracks || []).find((item) => item.path === path);
     if (row) Object.assign(row, detail, { _lyrics: detail.lyrics || '' });
-  } catch { state.library.loaded = false; }  // 重读失败就退回重新扫盘
+  } catch { invalidateLibrary(); }  // 重读失败就退回重新扫盘
 }
 
 /** 删除：本次不新增后端接口，点按只提示到文件管理器处理，绝不假装删掉。 */
@@ -1553,10 +1700,16 @@ function removeLibraryTrack(path) {
   toast(`音乐库不提供删除接口，请到文件管理器移除：${fileName(path)}`, true);
 }
 
+/** 库数据变了：连概览的短时缓存一起作废，下次进概览重新读，不会拿旧数字糊弄人。 */
+function invalidateLibrary() {
+  state.library.loaded = false;
+  state.library.dashCache = null;
+}
+
 async function renderLibrary() {
   const store = state.library;
   if (!store.loaded && !store.loading) {
-    $('page').innerHTML = '<div class="panel"><div class="empty">正在扫描音乐库…</div></div>';
+    $('page').innerHTML = `<div class="panel">${emptyBlock('i-library', '正在扫描音乐库…')}</div>`;
     store.loading = true;
     try {
       const data = await api('/api/library');
@@ -1569,7 +1722,7 @@ async function renderLibrary() {
       store.loaded = true;
     } catch (error) {
       store.loading = false;
-      $('page').innerHTML = `<div class="panel"><div class="empty">${esc(error.message)}</div></div>`;
+      $('page').innerHTML = `<div class="panel">${emptyBlock('i-library', error.message)}</div>`;
       return;
     } finally { store.loading = false; }
   }
@@ -1639,7 +1792,7 @@ async function renderLibrary() {
 
   // 工具条、Tab、筛选、分页的监听统一在 paintLibraryBody → bindLibraryActions 里挂，
   // 每次重绘都是新节点，就地重挂不依赖事件委托。
-  $('lib-reload').onclick = () => { store.loaded = false; renderLibrary(); };
+  $('lib-reload').onclick = () => { invalidateLibrary(); renderLibrary(); };
   $('lib-auto').onclick = () => autoFillLibrary();
 }
 
@@ -1670,7 +1823,7 @@ async function renderFiles() {
         </div></div>
       <div class="table-wrap"><table class="files-table"><thead><tr>
         <th class="col-pick"></th><th>文件名</th><th>标题</th><th>歌手</th><th>专辑</th><th>大小</th><th>时长</th><th>操作</th>
-      </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">源目录中没有找到音频文件</td></tr>'}</tbody></table></div>
+      </tr></thead><tbody>${rows || emptyCell('i-folder', '源目录中没有找到音频文件', 8)}</tbody></table></div>
     </div>
     <div class="panel span-4">
       <div class="panel-head"><div><h2>对选中的 <span id="selection-count">${state.selected.size}</span> 个文件执行</h2>
@@ -1862,7 +2015,7 @@ function renderPlanCards() {
   const items = state.plan.items || [];
   const visible = items.map((item, index) => ({ item, index })).filter(({ item }) => planFilter(item));
   $('plan-grid').innerHTML = visible.map(({ item, index }) => planCard(item, index)).join('')
-    || '<div class="empty">当前筛选条件下没有条目</div>';
+    || emptyBlock('i-funnel', '当前筛选条件下没有条目');
   $('plan-grid').querySelectorAll('[data-cand]').forEach((button) => {
     button.addEventListener('click', () => {
       const index = Number(button.dataset.idx);
@@ -1914,10 +2067,10 @@ function updatePlanBar() {
 async function renderPlan() {
   const job = state.previewJob;
   if (!job) {
-    $('page').innerHTML = `<div class="panel"><div class="empty">
-      还没有整理计划。请到「源文件」选择文件后点击「生成整理计划（预览）」。
-      <div style="margin-top:14px"><button class="ghost-btn" data-go="files">前往源文件</button></div>
-    </div></div>`;
+    $('page').innerHTML = `<div class="panel">${emptyBlock('i-plan',
+      '还没有整理计划。请到「源文件」选择文件后点击「生成整理计划（预览）」')}
+      <div class="btn-row empty-action"><button class="ghost-btn" data-go="files">前往源文件</button></div>
+    </div>`;
     document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
     return;
   }
@@ -2041,7 +2194,7 @@ function togglePlanTable(items) {
     </tr>`).join('');
   wrap.innerHTML = `<div class="table-wrap"><table><thead><tr>
       <th>源文件</th><th>标题</th><th>歌手</th><th>目标路径</th><th>置信度</th><th>状态</th>
-    </tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">没有计划项</td></tr>'}</tbody></table></div>`;
+    </tr></thead><tbody>${rows || emptyCell('i-plan', '没有计划项', 6)}</tbody></table></div>`;
   wrap.classList.remove('hidden');
 }
 
@@ -2091,7 +2244,7 @@ async function renderJobs() {
         <button class="ghost-btn danger-text" id="clear-jobs" ${jobs.length ? '' : 'disabled'}>清空记录</button>
       </div></div>
       <div class="table-wrap"><table class="jobs-table"><thead><tr><th>文件 / 歌曲名</th><th>类型</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="6" class="empty">暂无任务</td></tr>'}</tbody></table></div>
+        <tbody>${rows || emptyCell('i-jobs', '暂无任务', 6)}</tbody></table></div>
     </div>
     </div>`;
   $('refresh-jobs').addEventListener('click', renderJobs);
@@ -2148,11 +2301,11 @@ async function showJobItems(jobId) {
   const job = (state.jobs || []).find((row) => row.id === jobId) || {};
   let items = [];
   openDrawer('任务明细', `${jobLabel(job)} · ${statusLabel(job.status)} · ${fmtTime(job.created_at)}`);
-  $('drawer-body').innerHTML = '<div class="empty">正在读取明细…</div>';
+  $('drawer-body').innerHTML = emptyBlock('i-jobs', '正在读取明细…');
   $('drawer-stat').textContent = '';
   $('drawer-csv').href = `/api/jobs/${encodeURIComponent(jobId)}/report`;
   try { items = (await api(`/api/jobs/${jobId}/items?limit=500`)).items || []; }
-  catch (error) { $('drawer-body').innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  catch (error) { $('drawer-body').innerHTML = emptyBlock('i-jobs', error.message); return; }
   state.drawer.jobId = jobId;
   const done = items.filter((item) => item.status === 'done').length;
   const failed = items.filter((item) => item.status === 'failed').length;
@@ -2175,7 +2328,7 @@ async function showJobItems(jobId) {
       <div class="table-wrap"><table class="items-table"><thead><tr>
       <th>源文件</th><th>目标</th><th>方式</th><th>状态</th><th>说明</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`
-    : '<div class="empty">这次任务没有明细</div>';
+    : emptyBlock('i-jobs', '这次任务没有明细');
   // 悬停提示在渲染后统一绑定，避免把长路径塞进 innerHTML 属性。
   $('drawer-body').querySelectorAll('.with-title').forEach((node) => { node.title = node.dataset.full || ''; });
   $('drawer-body').querySelectorAll('[data-item]').forEach((node) => {
@@ -2348,6 +2501,101 @@ function pathField(id, label, value, title) {
   </div>`;
 }
 
+/* ---------------- 设置页：转移方式可用性（从概览搬来） ---------------- */
+function sameDeviceHint(same) {
+  if (same === true) return '源与库在同一挂载点 · 可用硬链接';
+  if (same === false) return '源与库跨挂载点 · 硬链接不可用';
+  return '等待目录就绪';
+}
+function capabilityPanelHtml() {
+  const store = state.capabilities;
+  const head = `<div class="panel-head"><div><h2>转移方式可用性</h2>
+      <p>硬链接要求源目录与音乐库位于同一文件系统 / 同一挂载点</p></div>
+    <div class="btn-row"><button class="ghost-btn small" id="cap-probe">运行写入自检</button></div></div>`;
+  const foot = `<p class="small muted" style="margin:14px 0 0">自检会在两个目录各创建一个临时文件并立即删除，用于确认写权限以及硬链接 / 符号链接是否被文件系统支持。</p>`;
+  if (store.error) {
+    return `${head}${emptyBlock('i-files', '目录状态读取失败，暂时无法判断可用性')}
+      <p class="small muted cap-error">${esc(store.error)}</p>${foot}`;
+  }
+  const data = store.data;
+  if (!data) {
+    return `${head}${emptyBlock('i-files', store.loading ? '正在读取目录状态…' : '正在等待目录状态')}${foot}`;
+  }
+  const paths = [
+    ['源目录', data.source_dir, data.source_exists],
+    ['音乐库目录', data.library_dir, data.library_exists],
+  ].map(([label, path, exists]) => `
+    <div class="cap-path">
+      <div class="cap-path-head">
+        <span class="field-label">${esc(label)}</span>
+        <span class="badge ${exists ? 'ok' : 'bad'}">${exists ? '目录可访问' : '目录不存在'}</span>
+      </div>
+      <span class="cap-path-value mono" title="${esc(path)}">${esc(path || '—')}</span>
+    </div>`).join('');
+  const tiles = (data.modes || []).map((item) => `
+    <div class="mode-tile">
+      <div class="mode-tile-head">
+        <b>${esc(item.label || modeLabel(item.mode))}</b>
+        <span>${capabilityBadge(item)}${item.probed ? ' <span class="tiny">已自检</span>' : ''}</span>
+      </div>
+      <p>${esc(item.reason || '—')}</p>
+    </div>`).join('');
+  return `${head}
+    <div class="cap-paths">${paths}</div>
+    <p class="cap-same ${data.same_device === false ? 'bad' : data.same_device === true ? 'ok' : ''}">
+      ${esc(sameDeviceHint(data.same_device))}</p>
+    <div class="mode-grid">${tiles || emptyBlock('i-files', '后端没有返回转移方式')}</div>
+    ${foot}`;
+}
+/** 读目录状态：失败降级为空态，不影响设置页其它内容与「保存设置」。 */
+async function loadCapabilities() {
+  const store = state.capabilities;
+  store.error = '';
+  try {
+    store.data = await api('/api/system/capabilities');
+  } catch (error) {
+    store.data = null;
+    store.error = error.message;
+  } finally {
+    store.loading = false;
+    store.loaded = true;
+  }
+}
+/* 只重画这一块面板：不整页 reload，旁边没保存的输入框不会被冲掉。 */
+function paintCapabilityPanel() {
+  const panel = $('cap-panel');
+  if (!panel) return;
+  panel.innerHTML = capabilityPanelHtml();
+  bindCapabilityProbe();
+}
+/** 读目录状态；失败只落到本面板的空态（含首次进入设置页）。 */
+async function refreshCapabilityPanel() {
+  if (!$('cap-panel') || state.capabilities.loading) return;
+  state.capabilities.loading = true;
+  paintCapabilityPanel();
+  await loadCapabilities();
+  paintCapabilityPanel();
+}
+function bindCapabilityProbe() {
+  const button = $('cap-probe');
+  if (!button) return;
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const result = await api('/api/system/capabilities', { method: 'POST', body: { probe: true } });
+      state.capabilities.data = { ...(state.capabilities.data || {}), modes: result.modes || [] };
+      state.capabilities.error = '';
+      toast('写入自检完成');
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      state.capabilities.loading = false;
+      state.capabilities.loaded = true;
+      paintCapabilityPanel();
+    }
+  });
+}
+
 function renderSettings() {
   const meta = state.settingsMeta;
   const s = state.settings;
@@ -2412,10 +2660,13 @@ function renderSettings() {
           <p>决定刮削完成后文件如何进入音乐库；四种方式的完整区别见「转移方式说明」</p></div></div>
         <div class="mode-cards">${modeCards}</div>
       </div>
+      <div class="panel span-4" id="cap-panel">
+        ${capabilityPanelHtml()}
+      </div>
       <div class="panel span-4">
         <div class="panel-head"><div><h2>命名与匹配</h2>
           <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code> <span class="small muted">${esc(TEMPLATE_FIELD_LABELS[f] || '')}</span>`).join(' · ')}</p>
-          <p>默认按「专辑名 / 专辑歌手 / 歌曲文件」建目录，播放器与音乐服务器都能直接认</p></div></div>
+          <p>默认按「专辑名 / 专辑歌手 / 歌曲文件」建目录，音乐服务器与刮削工具都能直接识别</p></div></div>
         <div class="grid">
           <label class="field"><span class="field-label">命名模板预设</span>
             <select id="preset">${presets}</select></label>
@@ -2475,6 +2726,8 @@ function renderSettings() {
   });
   $('f-template').addEventListener('input', updateExample);
   $('save-settings').addEventListener('click', saveSettings);
+  // 转移方式可用性：设置页自己拉 /api/system/capabilities，概览不再请求它
+  if (state.capabilities.loaded) paintCapabilityPanel(); else refreshCapabilityPanel();
   $('f-watch').addEventListener('change', saveWatch);
   $('watch-reset').addEventListener('click', async () => {
     try { state.watch = await api('/api/watch/reset', { method: 'POST' }); toast('已把现有文件标记为已处理'); await renderSettings(); }
