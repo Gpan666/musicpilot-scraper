@@ -26,6 +26,7 @@ const NAV = [
   { id: 'jobs', label: '任务记录', icon: 'i-jobs' },
   { group: '配置' },
   { id: 'settings', label: '刮削设置', icon: 'i-settings' },
+  { id: 'system', label: '系统设置', icon: 'i-system' },
   { id: 'docs', label: '转移方式说明', icon: 'i-docs' },
 ];
 const PAGE_META = {
@@ -34,7 +35,8 @@ const PAGE_META = {
   files: ['源文件', '扫描源目录、选择文件并生成整理计划'],
   plan: ['整理计划', '先预览源 → 目标的映射，确认后再执行'],
   jobs: ['任务记录', '查看进度与明细、取消任务、导出表格（CSV）报告'],
-  settings: ['刮削设置', '目录、转移方式、命名模板与账户'],
+  settings: ['刮削设置', '命名模板、目标冲突策略、元数据来源与写入项'],
+  system: ['系统设置', '目录、转移方式与运行环境自检'],
   docs: ['转移方式说明', '复制 / 移动 / 硬链接 / 软链接 的原理、限制与适用场景'],
 };
 const MODE_ORDER = ['copy', 'move', 'hardlink', 'symlink'];
@@ -432,7 +434,7 @@ function renderPicker() {
 function renderPage() {
   const renderers = {
     dashboard: renderDashboard, library: renderLibrary, files: renderFiles, plan: renderPlan,
-    jobs: renderJobs, settings: renderSettings, docs: renderDocs,
+    jobs: renderJobs, settings: renderSettings, system: renderSystem, docs: renderDocs,
   };
   // 同一页重画也算新的一批：换槽位时把上一批没回来的请求取消掉
   switchRequestSlot(`paint:${state.page}`);
@@ -495,13 +497,16 @@ async function renderDashboard() {
   const tracks = lib.tracks || [];
   const sources = (lib.sources || []).filter((item) => item.enabled);
 
+  /* 五个快捷磁贴：源文件 / 整理计划 / 任务记录 / 刮削设置 / 系统设置，
+   * 宽屏一行五等分，窄屏整行折行（见 .dash-quick 断点），不留半行空洞。 */
   const quickTiles = [
     ['files', '源文件', 'i-files'],
     ['plan', '整理计划', 'i-plan'],
     ['jobs', '任务记录', 'i-jobs'],
     ['settings', '刮削设置', 'i-settings'],
+    ['system', '系统设置', 'i-system'],
   ].map(([page, label, icon]) => `
-      <button class="panel quick-tile pad-card" type="button" data-go="${page}">
+      <button class="panel quick-tile" type="button" data-go="${page}">
         <span class="quick-icon">${spriteIcon(icon)}</span>
         <span class="quick-label">${esc(label)}</span>
       </button>`).join('');
@@ -520,7 +525,6 @@ async function renderDashboard() {
           ? `每 ${Math.round(watch.interval || 30)} 秒检查源目录${watch.tracked ? ` · 已记录 ${watch.tracked} 个文件` : ''}${watch.in_library ? ` · 库内 ${watch.in_library} 个已过滤` : ''}`
           : '开启后只刮库里还没有的新文件')}</div>
       </div>
-      <span class="dash-fill" aria-hidden="true"></span>
     </div>`;
 
   const jobRows = (data.jobs || []).map((job) => `
@@ -540,11 +544,11 @@ async function renderDashboard() {
       <div class="mini-side"><span>${esc(fmtTime(item.created_at))}</span></div>
     </div>`).join('');
 
-  /* 版面是「行 + 行内弹性」：每行都是一份 flex，行内卡片按 flex-basis 分宽度，
-   * 行尾放一块净宽 0 的 .dash-fill 吃掉多余像素，缩放到任何宽度都不会留半行空洞。 */
+  /* 版面是 CSS Grid 显式分栏：每行自己一份栅格，间隔由 gap 产生，
+   * 卡片是 border-box 的格子，边框与背景都收在自己的格里，相邻两张不会叠到一起。 */
   $('page').innerHTML = `
     <div class="dash-board">
-      <div class="dash-row dash-quick">${quickTiles}<span class="dash-fill" aria-hidden="true"></span></div>
+      <div class="dash-row dash-quick">${quickTiles}</div>
       <div class="dash-row dash-row-7-5">
         <div class="panel dash-library" id="dash-library">
           <div class="panel-head"><div><h2>音乐库概览</h2>
@@ -578,9 +582,8 @@ async function renderDashboard() {
       ${accountPanel}
       <div class="dash-row dash-row-counts">
         ${libError
-          ? `<div class="panel stat stat-panel dash-count pad-card">${emptyBlock('i-spark', '音乐库统计读取失败')}</div>`
+          ? `<div class="panel stat stat-panel dash-count">${emptyBlock('i-spark', '音乐库统计读取失败')}</div>`
           : `${dashCompleteCard(stats)}${dashSourceCard(sources)}`}
-        <span class="dash-fill" aria-hidden="true"></span>
       </div>
     </div>`;
   bindCoverFallback($('page'));
@@ -598,7 +601,7 @@ function dashCompleteCard(stats) {
   const incomplete = Number(stats.incomplete) || 0;
   const rate = total ? Math.round((100 * (total - Math.min(incomplete, total))) / total) : null;
   return `
-    <div class="panel stat stat-panel dash-count pad-card">
+    <div class="panel stat stat-panel dash-count">
       <div class="stat-label">库完整率</div>
       <div class="stat-value">${rate === null ? '—' : `${rate}%`}</div>
       <div class="progress dash-count-bar"><span class="${dashRateTone(rate)}" style="width:${rate === null ? 0 : rate}%"></span></div>
@@ -609,7 +612,7 @@ function dashCompleteCard(stats) {
 function dashSourceCard(sources) {
   if (!sources.length) return '';
   return `
-    <div class="panel stat stat-panel dash-count pad-card">
+    <div class="panel stat stat-panel dash-count">
       <div class="stat-label">元数据来源</div>
       <div class="stat-value">${esc(String(sources.length))}</div>
       <div class="stat-note">${esc(sources.map((item) => item.label).join(' · '))}</div>
@@ -1159,7 +1162,7 @@ function bindLibraryBody(box, visible) {
  *   核心数据  只补空字段，先预览再写入（后端 /api/library/apply 的 dry_run）
  *   智能刮削  选平台 → 搜索 → 1–10 匹配度 → 预览 / 写入标签
  *   歌词      懒加载 detail，LRC 预览 + 原始文本编辑，整体替换
- *   时光机    后端没有修改历史接口，只显示本次会话内的操作
+ *   操作历史  后端没有操作历史接口，只显示本次会话内真实做过的写入
  * 弹窗骨架一次建好、事件只绑一次（bindMediaEditor），反复开关不会叠加监听。
  */
 // 只有这七个字段后端支持写入（write_missing_tags 的白名单），其余一律只读
@@ -1647,7 +1650,7 @@ function parseLrc(text) {
   return { isLrc, rows };
 }
 
-/* ---- 时光机：本次会话内的操作；后端没有历史接口，不做任何伪造 ---- */
+/* ---- 操作历史：本次会话内的操作；后端没有操作历史接口，不做任何伪造 ---- */
 function paintMediaTimeline(track) {
   const box = mediaEditorNode()?.querySelector('[data-me-body]');
   if (!box) return;
@@ -1655,7 +1658,7 @@ function paintMediaTimeline(track) {
   box.innerHTML = `
     <div class="me-timeline">
       <div class="me-block-head">
-        <span class="field-label">本次会话的操作</span>
+        <span class="field-label">本次会话操作历史</span>
         <span class="badge">${rows.length ? `${rows.length} 条` : '暂无记录'}</span>
       </div>
       ${rows.length
@@ -1667,8 +1670,8 @@ function paintMediaTimeline(track) {
             </div>
             <span class="me-timeline-time mono">${esc(row.at)}</span>
           </li>`).join('')}</ol>`
-        : emptyBlock('i-clock', '暂无修改历史 · 此音频文件尚未产生任何修改记录')}
-      <p class="small muted me-timeline-foot">后端没有提供文件的修改历史接口，这里只记录本次会话内做过的写入操作（写入标签、写入歌词…），刷新页面后清空。</p>
+        : emptyBlock('i-clock', '暂无操作记录 · 这首曲目还没有产生任何写入操作')}
+      <p class="small muted me-timeline-foot">后端没有提供操作历史接口，这里只记录本次会话内真实做过的写入（时间 + 操作 + 字段，写入标签、写入歌词…），刷新页面后清空。</p>
     </div>`;
 }
 
@@ -2673,22 +2676,23 @@ function bindCapabilityProbe() {
   });
 }
 
-function renderSettings() {
-  const meta = state.settingsMeta;
+/* ---------------- 设置：拆成「刮削设置」与「系统设置」两页 ---------------- */
+/* 两页共用同一份 /api/settings 数据，但各自的控件只在各自的页面上存在：
+ * 保存时只收当前页真实存在的字段，缺的字段沿用 state.settings 里的原值，
+ * 于是「改一页保存」不会把另一页的设置清空或覆盖。 */
+function modeCardsHtml() {
   const s = state.settings;
-  const modeCards = MODE_ORDER.map((mode) => {
+  return MODE_ORDER.map((mode) => {
     const info = state.modes.find((item) => item.mode === mode) || {};
     return `<div class="mode-card${s.transfer_mode === mode ? ' selected' : ''}" data-mode="${mode}">
       <h3>${esc(info.label || modeLabel(mode))}</h3><div class="mode-en">${esc(info.short || '')}</div>
       <p>${esc(info.short || '')}</p><div class="mode-tag">${s.transfer_mode === mode ? '✓ 当前使用' : '点击选用'}</div></div>`;
   }).join('');
-  const presets = (meta.templates || []).map((preset) => (
-    `<option value="${esc(preset.template)}">${esc(preset.name)}</option>`
-  )).join('');
-  const sourceChecks = SOURCE_OPTIONS.map(([name, label]) => `
-    <label class="check-line"><input type="checkbox" data-source="${name}" ${(s.metadata_sources || []).includes(name) ? 'checked' : ''}>
-      ${esc(label)}</label>`).join('');
-  const accountCard = state.auth.is_admin ? `
+}
+
+function accountCardHtml() {
+  if (!state.auth.is_admin) return '';
+  return `
     <div class="panel span-2">
       <div class="panel-head"><div><h2>账户</h2>
         <p>当前登录：${esc(state.auth.username)}（管理员）。可以在这里添加新的使用账号。</p></div></div>
@@ -2699,9 +2703,12 @@ function renderSettings() {
           <input id="new-pass" type="password" autocomplete="new-password" placeholder="至少 8 位"></label>
       </div>
       <button class="ghost-btn" id="create-user">添加账号</button>
-    </div>` : '';
+    </div>`;
+}
+
+function watchCardHtml() {
   const watch = state.watch || {};
-  const watchCard = `
+  return `
     <div class="panel span-2">
       <div class="panel-head"><div><h2>自动刮削</h2>
         <p>盯住源目录，出现新文件就自动排一个刮削任务，不用再手动点</p></div>
@@ -2722,24 +2729,29 @@ function renderSettings() {
       </div>
       ${watch.last_error ? `<p class="small" style="color:var(--danger);margin-top:8px">${esc(watch.last_error)}</p>` : ''}
     </div>`;
+}
+
+/** 两页共用的保存条：说明 + 主按钮，id 一致，事件按页各自绑。 */
+function saveBarHtml(note) {
+  return `
+    <div class="panel span-4"><div class="between">
+      <div><h3>保存设置</h3>
+        <p class="small muted" style="margin-top:4px">${esc(note)}</p></div>
+      <button class="primary-btn" id="save-settings">保存设置</button></div></div>`;
+}
+
+/* 刮削设置：命名与匹配、目标冲突策略、元数据来源、写入项、外观、自动刮削 */
+function renderSettings() {
+  const meta = state.settingsMeta;
+  const s = state.settings;
+  const presets = (meta.templates || []).map((preset) => (
+    `<option value="${esc(preset.template)}">${esc(preset.name)}</option>`
+  )).join('');
+  const sourceChecks = SOURCE_OPTIONS.map(([name, label]) => `
+    <label class="check-line"><input type="checkbox" data-source="${name}" ${(s.metadata_sources || []).includes(name) ? 'checked' : ''}>
+      ${esc(label)}</label>`).join('');
   $('page').innerHTML = `
     <div class="bento">
-      <div class="panel span-4">
-        <div class="panel-head"><div><h2>目录</h2>
-          <p>直接点「浏览…」从服务器挂载目录中选择，不需要手动输入路径</p></div></div>
-        <div class="grid">
-          ${pathField('f-source', '源目录（待刮削的下载文件夹）', s.source_dir, '选择源目录')}
-          ${pathField('f-library', '音乐库目录（整理后的目标）', s.library_dir, '选择音乐库目录')}
-        </div>
-      </div>
-      <div class="panel span-4">
-        <div class="panel-head"><div><h2>转移方式</h2>
-          <p>决定刮削完成后文件如何进入音乐库；四种方式的完整区别见「转移方式说明」</p></div></div>
-        <div class="mode-cards">${modeCards}</div>
-      </div>
-      <div class="panel span-4" id="cap-panel">
-        ${capabilityPanelHtml()}
-      </div>
       <div class="panel span-4">
         <div class="panel-head"><div><h2>命名与匹配</h2>
           <p>可用变量：${(meta.template_fields || []).map((f) => `<code>{${esc(f)}}</code> <span class="small muted">${esc(TEMPLATE_FIELD_LABELS[f] || '')}</span>`).join(' · ')}</p>
@@ -2779,36 +2791,67 @@ function renderSettings() {
         <h3>标签写入与链接的关系</h3>
         <p class="muted small" style="margin-top:8px">标签在转移之前写入源文件。使用硬链接 / 软链接时目标共享源文件数据，因此源文件标签也会被补全，之后修改任一边都会影响另一边。若不希望改动源文件，请关闭「写入音频标签」或改用复制。</p>
       </div>
-      ${watchCard}
-      ${accountCard}
-      <div class="panel span-4"><div class="between">
-        <div><h3>保存设置</h3>
-          <p class="small muted" style="margin-top:4px">设置保存在数据目录的 SQLite 中，重启容器后依然生效；环境变量作为默认值。</p></div>
-        <button class="primary-btn" id="save-settings">保存设置</button></div></div>
+      ${watchCardHtml()}
+      ${saveBarHtml('设置保存在数据目录的 SQLite 中，重启容器后依然生效；环境变量作为默认值。目录与转移方式在「系统设置」页。')}
     </div>`;
   applyTheme(themePreference());
-  document.querySelectorAll('[data-mode]').forEach((card) => card.addEventListener('click', () => {
-    state.settings.transfer_mode = card.dataset.mode;
-    renderSettings();
-  }));
-  document.querySelectorAll('[data-theme-choice]').forEach((button) => {
-    button.addEventListener('click', () => applyTheme(button.dataset.themeChoice));
-  });
-  document.querySelectorAll('[data-pick-dir]').forEach((button) => {
-    button.addEventListener('click', () => openPicker(button.dataset.pickDir, button.dataset.pickTitle));
-  });
-  $('preset').addEventListener('change', (event) => {
+  bindThemeChoices();
+  const preset = $('preset');
+  if (preset) preset.addEventListener('change', (event) => {
     $('f-template').value = event.target.value;
     updateExample();
   });
-  $('f-template').addEventListener('input', updateExample);
-  $('save-settings').addEventListener('click', saveSettings);
-  // 转移方式可用性：设置页自己拉 /api/system/capabilities，概览不再请求它
+  const template = $('f-template');
+  if (template) template.addEventListener('input', updateExample);
+  bindSettingsCommon();
+}
+
+/* 系统设置：目录、转移方式、转移方式可用性（自检）、账户 */
+function renderSystem() {
+  const s = state.settings;
+  $('page').innerHTML = `
+    <div class="bento">
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>目录</h2>
+          <p>直接点「浏览…」从服务器挂载目录中选择，不需要手动输入路径</p></div></div>
+        <div class="grid">
+          ${pathField('f-source', '源目录（待刮削的下载文件夹）', s.source_dir, '选择源目录')}
+          ${pathField('f-library', '音乐库目录（整理后的目标）', s.library_dir, '选择音乐库目录')}
+        </div>
+      </div>
+      <div class="panel span-4">
+        <div class="panel-head"><div><h2>转移方式</h2>
+          <p>决定刮削完成后文件如何进入音乐库；四种方式的完整区别见「转移方式说明」</p></div></div>
+        <div class="mode-cards">${modeCardsHtml()}</div>
+      </div>
+      <div class="panel span-4" id="cap-panel">
+        ${capabilityPanelHtml()}
+      </div>
+      ${accountCardHtml()}
+      ${saveBarHtml('改完点保存才生效；转移方式与目录会写进数据目录的 SQLite。刮削参数在「刮削设置」页。')}
+    </div>`;
+  bindSettingsCommon();
+  // 转移方式可用性：系统设置页自己拉 /api/system/capabilities，只重画这一块面板
   if (state.capabilities.loaded) paintCapabilityPanel(); else refreshCapabilityPanel();
-  $('f-watch').addEventListener('change', saveWatch);
-  $('watch-reset').addEventListener('click', async () => {
-    try { state.watch = await api('/api/watch/reset', { method: 'POST' }); toast('已把现有文件标记为已处理'); await renderSettings(); }
-    catch (error) { toast(error.message, true); }
+}
+
+/** 两页共用的交互：保存按钮、转移方式点选、目录「浏览…」、自检、watch 按钮、账户。 */
+function bindSettingsCommon() {
+  bindModeCards();
+  bindPathPickers();
+  bindThemeChoices();
+  const save = $('save-settings');
+  if (save) save.addEventListener('click', saveSettings);
+  bindCapabilityProbe();
+  const watchToggle = $('f-watch');
+  if (watchToggle) watchToggle.addEventListener('change', saveWatch);
+  const watchReset = $('watch-reset');
+  if (watchReset) watchReset.addEventListener('click', async () => {
+    try {
+      state.watch = await api('/api/watch/reset', { method: 'POST' });
+      toast('已把现有文件标记为已处理');
+      await repaintSettingsPage();
+    } catch (error) { toast(error.message, true); }
   });
   const createUser = $('create-user');
   if (createUser) createUser.addEventListener('click', async () => {
@@ -2824,39 +2867,96 @@ function renderSettings() {
   });
 }
 
+/** 「保存设置」成功后重画当前这一页，而不是固定回刮削设置页。 */
+function repaintSettingsPage() {
+  const paint = state.page === 'system' ? renderSystem : renderSettings;
+  return paint();
+}
+
+function bindThemeChoices() {
+  document.querySelectorAll('[data-theme-choice]').forEach((button) => {
+    button.addEventListener('click', () => applyTheme(button.dataset.themeChoice));
+  });
+}
+
+function bindPathPickers() {
+  document.querySelectorAll('[data-pick-dir]').forEach((button) => {
+    button.addEventListener('click', () => openPicker(button.dataset.pickDir, button.dataset.pickTitle));
+  });
+}
+
+/* 点选转移方式只改这几张卡的样式，不整页重画：旁边没保存的输入框不会被冲掉。 */
+function bindModeCards() {
+  document.querySelectorAll('[data-mode]').forEach((card) => {
+    card.addEventListener('click', () => {
+      state.settings.transfer_mode = card.dataset.mode;
+      document.querySelectorAll('[data-mode]').forEach((item) => {
+        const active = item.dataset.mode === card.dataset.mode;
+        item.classList.toggle('selected', active);
+        const tag = item.querySelector('.mode-tag');
+        if (tag) tag.textContent = active ? '✓ 当前使用' : '点击选用';
+      });
+    });
+  });
+}
+
 function updateExample() {
-  const template = $('f-template').value;
-  const example = template
+  const input = $('f-template');
+  const out = $('template-example');
+  if (!input || !out) return;
+  const example = input.value
     .replace(/\{artist\}/g, 'Queen').replace(/\{album\}/g, 'A Night at the Opera')
     .replace(/\{album_artist\}/g, 'Queen').replace(/\{title\}/g, 'Bohemian Rhapsody')
     .replace(/\{track(?::[^}]*)?\}/g, '11').replace(/\{disc(?::[^}]*)?\}/g, '1')
     .replace(/\{year\}/g, '1975').replace(/\{filename\}/g, '11 Bohemian Rhapsody')
     .replace(/\{ext\}/g, 'flac');
-  $('template-example').textContent = `${example}.flac`;
+  out.textContent = `${example}.flac`;
+}
+
+/** 读一个可能不在当前页的控件：元素不存在时返回 undefined，保存时沿用原值。 */
+function readField(id, pick) {
+  const node = $(id);
+  return node ? pick(node) : undefined;
+}
+
+/** 只收当前页真实存在的设置项；其余字段原样沿用 state.settings。 */
+function collectSettingsValues() {
+  const picked = {
+    transfer_mode: state.settings.transfer_mode,
+    naming_template: readField('f-template', (node) => node.value.trim()),
+    conflict_policy: readField('f-conflict', (node) => node.value),
+    unknown_placeholder: readField('f-unknown', (node) => node.value.trim() || '未知'),
+    confidence_threshold: readField('f-threshold', (node) => {
+      const value = Number(node.value);
+      return Number.isFinite(value) ? value : undefined;
+    }),
+    source_dir: readField('f-source', (node) => node.value.trim()),
+    library_dir: readField('f-library', (node) => node.value.trim()),
+    write_tags: readField('f-write-tags', (node) => node.checked),
+    embed_cover: readField('f-cover', (node) => node.checked),
+    write_lyrics: readField('f-lyrics', (node) => node.checked),
+    symlink_relative: readField('f-relative', (node) => node.checked),
+  };
+  // 音源勾选框只在刮削设置页：没有勾选框就整项不动，别写成空数组把音源清掉
+  const boxes = [...document.querySelectorAll('[data-source]')];
+  picked.metadata_sources = boxes.length
+    ? boxes.filter((box) => box.checked).map((box) => box.dataset.source)
+    : undefined;
+  const values = { ...state.settings };
+  Object.entries(picked).forEach(([key, value]) => {
+    if (value !== undefined) values[key] = value;
+  });
+  return values;
 }
 
 async function saveSettings() {
-  const values = {
-    transfer_mode: state.settings.transfer_mode,
-    naming_template: $('f-template').value.trim(),
-    conflict_policy: $('f-conflict').value,
-    unknown_placeholder: $('f-unknown').value.trim() || '未知',
-    confidence_threshold: Number($('f-threshold').value),
-    source_dir: $('f-source').value.trim(),
-    library_dir: $('f-library').value.trim(),
-    write_tags: $('f-write-tags').checked,
-    embed_cover: $('f-cover').checked,
-    write_lyrics: $('f-lyrics').checked,
-    symlink_relative: $('f-relative').checked,
-    metadata_sources: [...document.querySelectorAll('[data-source]')]
-      .filter((box) => box.checked).map((box) => box.dataset.source),
-  };
+  const values = collectSettingsValues();
   try {
     const result = await api('/api/settings', { method: 'PUT', body: { values } });
     state.settings = result.settings;
     state.settingsMeta = result;
     toast('设置已保存');
-    await renderSettings();
+    await repaintSettingsPage();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -2870,7 +2970,7 @@ async function saveWatch() {
     state.watch = await api('/api/watch', { method: 'PUT', body });
     toast(body.enabled ? '自动刮削已开启' : '自动刮削已关闭');
     await loadSettings();
-    await renderSettings();
+    await repaintSettingsPage();
   } catch (error) { toast(error.message, true); }
 }
 
