@@ -72,6 +72,15 @@ class LibraryScrapeApply(BaseModel):
     dry_run: bool = False
 
 
+class LibraryLyricsFetch(BaseModel):
+    """从音源按候选 id 取词：只读，不写任何文件。"""
+
+    source: str = Field(min_length=1, max_length=40)
+    external_id: str = Field(min_length=1, max_length=200)
+    album: str | None = Field(default=None, max_length=300)
+    title: str | None = Field(default=None, max_length=300)
+
+
 class LibraryLyricsApply(BaseModel):
     path: str = Field(min_length=1, max_length=2000)
     lyrics: str = Field(default="", max_length=200_000)

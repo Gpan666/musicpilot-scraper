@@ -471,7 +471,7 @@ function statusBadge(status) {
   return `<span class="badge ${tone}">${esc(label)}</span>`;
 }
 
-/* ---------------- 概览：快捷入口 + 音乐库概览 + 最近入库 + 最近任务 ---------------- */
+/* ---------------- 概览：库状态速览 + 最近入库 + 最近任务 + 最近整理 ---------------- */
 /* 概览只读现有接口：/api/dashboard 管任务与账号，/api/library 管库统计与最近入库。
  * 库数据先用音乐库页 / 上次概览留下的缓存，没有或过了 DASH_LIBRARY_TTL 才请求，
  * 免得每次点进概览都把整库标签重扫一遍。两个请求各自降级，任何一个挂了都不影响整页。 */
@@ -507,18 +507,6 @@ async function renderDashboard() {
   const stats = lib.stats || {};
   const tracks = lib.tracks || [];
 
-  /* 四个快捷磁贴正好铺满一行（4 等分）；刮削设置从左侧导航进，不再多出一格凑 5 列。 */
-  const quickTiles = [
-    ['files', '源文件', 'i-files'],
-    ['plan', '整理计划', 'i-plan'],
-    ['jobs', '任务记录', 'i-jobs'],
-    ['system', '系统设置', 'i-system'],
-  ].map(([page, label, icon]) => `
-      <button class="panel quick-tile" type="button" data-go="${page}">
-        <span class="quick-icon">${spriteIcon(icon)}</span>
-        <span class="quick-label">${esc(label)}</span>
-      </button>`).join('');
-
   const jobRows = (data.jobs || []).map((job) => `
     <div class="mini-row">
       <div class="mini-main">
@@ -541,15 +529,14 @@ async function renderDashboard() {
 
   /* 版面是「行 + Grid 分栏」：每行是一张 CSS Grid，间隔由 gap 产生，
    * 卡片自己是 border-box，边框与背景永远不会越出格子，相邻卡片不会互相压住。
-   * 三行分别是 4 等分 / 2 等分 / 2 等分，同行一律等高（stretch），没有 7:5、没有孤卡。 */
+   * 概览只留两行 2 等分（库状态速览｜最近入库、最近任务｜最近整理），
+   * 左侧导航已有入口的页面不再在概览里重列一遍磁贴或跳转按钮。 */
   $('page').innerHTML = `
     <div class="dash-board">
-      <div class="dash-row dash-quick">${quickTiles}</div>
       <div class="dash-row dash-row-2">
         <div class="panel dash-library" id="dash-library">
           <div class="panel-head"><div><h2>库状态速览</h2>
-            <p>曲目、专辑、歌手与待补全进度</p></div>
-            <button class="ghost-btn small" data-go="library">打开音乐库</button></div>
+            <p>曲目、专辑、歌手与待补全进度</p></div></div>
           ${libError ? `
             ${emptyBar('i-library', '音乐库统计读取失败')}
             <p class="small muted dash-empty-note">${esc(libError)}</p>
@@ -558,21 +545,19 @@ async function renderDashboard() {
         </div>
         <div class="panel dash-recent" id="dash-recent">
           <div class="panel-head"><div><h2>最近入库</h2>
-            <p>按文件修改时间倒序的前 ${DASH_RECENT_LIMIT} 首</p></div>
-            <button class="ghost-btn small" data-go="library">查看全部</button></div>
+            <p>按文件修改时间倒序的前 ${DASH_RECENT_LIMIT} 首</p></div></div>
           ${libError ? emptyBar('i-clock', '最近入库读取失败') : dashRecentHtml(tracks)}
         </div>
       </div>
       <div class="dash-row dash-row-2">
         <div class="panel dash-jobs">
-          <div class="panel-head"><div><h2>最近任务</h2></div>
-            <button class="ghost-btn small" data-go="jobs">查看全部</button></div>
-          ${jobList || emptyBar('i-jobs', '暂无任务，去源文件生成一份计划', 'files', '去源文件')}
+          <div class="panel-head"><div><h2>最近任务</h2></div></div>
+          ${jobList || emptyBar('i-jobs', '暂无任务记录')}
         </div>
         <div class="panel dash-done">
           <div class="panel-head"><div><h2>最近整理</h2>
             <p>确认后的文件按当前转移方式落库</p></div></div>
-          ${doneList || emptyBar('i-plan', '暂无整理记录', 'jobs', '去任务记录')}
+          ${doneList || emptyBar('i-plan', '暂无整理记录')}
         </div>
       </div>
     </div>`;
@@ -587,8 +572,9 @@ async function renderDashboard() {
 
 const DASH_RECENT_LIMIT = 8;
 
-/** 库状态速览：三个数字 + 一条待补全进度 + 打开音乐库的入口。
- * 封面 / 歌词覆盖率、最常缺字段都在音乐库页有，概览不再重复列。 */
+/** 库状态速览：三个数字 + 一条待补全进度。
+ * 封面 / 歌词覆盖率、最常缺字段都在音乐库页有，概览不再重复列；
+ * 页面入口一律交给左侧导航，概览里不放「打开音乐库」这类纯跳转按钮。 */
 function dashLibraryHtml(stats) {
   const total = Number(stats.tracks) || 0;
   const incomplete = Math.min(Number(stats.incomplete) || 0, total);
@@ -608,7 +594,6 @@ function dashLibraryHtml(stats) {
     </div>
     <div class="dash-foot">
       <span class="dash-pending">待补全 <b class="${incomplete ? 'warn' : 'ok'}">${esc(String(incomplete))}</b> 首</span>
-      <button class="ghost-btn small" data-go="library">去音乐库补全</button>
     </div>`;
 }
 /** 待补全占比的配色：补全率越高越绿，全补完是绿的，缺得多是红的。 */
@@ -623,7 +608,7 @@ function dashRecentHtml(tracks) {
     .filter((track) => Number(track.modified_at) > 0)
     .sort((a, b) => Number(b.modified_at) - Number(a.modified_at))
     .slice(0, DASH_RECENT_LIMIT);
-  if (!recent.length) return emptyBar('i-clock', '还没有入库曲目', 'library', '去音乐库');
+  if (!recent.length) return emptyBar('i-clock', '还没有入库曲目');
   // 列表放进定高滚动容器：卡片与左侧「库状态速览」等高，条目多也不会把整行拉长
   const rows = recent.map((track) => `
     <div class="mini-row dash-recent-row">
@@ -1515,7 +1500,7 @@ const LRC_META_HEAD = /^\s*\[([a-zA-Z]{2,6})\s*:\s*([^\]]*)\]\s*$/;
 const LRC_CREDIT = /^\s*(作词|作曲|编曲|制作人|词|曲|演唱|原唱|录音|混音|母带|吉他|贝斯|鼓|键盘|和声|出品|监制|发行|OP|SP|Written by|Composed by|Lyrics by|Produced by)\s*[:：]\s*(.+)$/i;
 const LRC_META_ORDER = ['ti', 'ar', 'al', 'au', 'by', 'offset', 'length', 're', 've'];
 const LYRIC_HINT = '已填入歌词，点保存歌词才会写入文件';
-const LYRIC_NO_SOURCE = '该来源没有提供歌词';
+const LYRIC_NO_SOURCE = '该来源没有给出歌词正文';
 
 const lyricsDraftText = (lyr) => (lyr.draft === null ? (lyr.text || '') : lyr.draft);
 const lyricsQuery = (lyr) => String(lyr.query || '').trim();
@@ -1587,6 +1572,7 @@ function paintMediaLyrics(track) {
       busy: -1,
       results: [],
       hint: '',
+      stats: [],
       form: { title: track.title || '', artist: track.artist || '', album: track.album || '', source: '' },
     };
   }
@@ -1746,20 +1732,72 @@ function syncLyricsStatus(box, lyr) {
   }
 }
 
-/* ---- 从音源搜词：复用 /api/library/search，候选里带「有没有词」 ---- */
+/* ---- 从音源搜词：候选按源分组，点「填入编辑区」走 POST /api/library/lyrics/fetch
+ * 那条通道只读不写：拿不到就显示后端给的具体原因（该来源不支持 / 接口无返回 / 该歌曲没有歌词），
+ * 不编造歌词，也不把「拿不到」笼统说成「没有」。写盘永远只走「保存歌词」。 ---- */
+/** 源的能力说明：chip 只有「已启用且真能用」才亮，其余置灰并把原因写进 title。 */
+function lyricSourceChipState(item) {
+  if (!item.enabled) {
+    return { usable: false, tone: '未启用', title: '该平台未在设置中启用' };
+  }
+  if (item.available === false) {
+    return { usable: false, tone: '不可用', title: item.note || '该来源接口已失效' };
+  }
+  if (item.lyrics === false) {
+    // 能搜但仍拿不到词的源：把「为什么」写全（覆盖范围 + 不提供歌词正文）
+    return { usable: false, tone: '仅元数据', title: item.note || item.lyrics_note || '该来源不提供歌词' };
+  }
+  return { usable: true, tone: '可取词', title: item.note || '可搜索并按 id 取词' };
+}
+
+function lyricsSourceChips(sel) {
+  const sources = state.library.sources || [];
+  const chips = sources.map((item) => {
+    const state = lyricSourceChipState(item);
+    // 本次搜索该源失败 / 0 条：在 chip 上就地标出来，别让「亮着却空着」
+    const stat = (sel.stats || []).find((row) => row.id === item.id);
+    if (stat && state.usable) {
+      state.tone = stat.ok ? (stat.count ? `本次 ${stat.count} 条` : '本次 0 条') : (stat.note || '接口无返回');
+      state.title = stat.note || `本次搜索 ${stat.count} 条`;
+    }
+    const cls = `cand-chip${state.usable ? '' : ' dim'}${sel.form.source === item.id ? ' active' : ''}`;
+    return `<button class="${cls}" type="button" data-lsrc-source="${esc(item.id)}"
+       ${state.usable ? '' : 'disabled'} title="${esc(state.title)}">
+       <b>${esc(item.label)}</b><span>${esc(state.tone)}</span></button>`;
+  }).join('');
+  const usable = sources.filter((item) => lyricSourceChipState(item).usable).length;
+  return { chips, usable };
+}
+
+/** 候选按源分组：同一平台的候选排在一起，组头写清这个源能不能取词。 */
+function lyricsSourceGroups(results) {
+  const groups = [];
+  const index = new Map();
+  results.forEach((item, position) => {
+    const source = (item.metadata || {}).source || 'unknown';
+    if (!index.has(source)) {
+      index.set(source, groups.length);
+      groups.push({ source, label: item.source_label || sourceLabel(source), rows: [] });
+    }
+    groups[index.get(source)].rows.push({ item, position });
+  });
+  return groups;
+}
+
 function lyricsSourceHtml(lyr, track) {
   const sel = lyr.select;
-  const chips = (state.library.sources || []).map((item) => (
-    `<button class="cand-chip${item.enabled ? '' : ' dim'}${sel.form.source === item.id ? ' active' : ''}"
-       type="button" data-lsrc-source="${esc(item.id)}"
-       ${item.enabled ? '' : 'disabled title="该平台未在设置中启用"'}>
-       <b>${esc(item.label)}</b><span>${item.enabled ? '已启用' : '未启用'}</span></button>`
-  )).join('');
+  const { chips, usable } = lyricsSourceChips(sel);
+  const groups = lyricsSourceGroups(sel.results);
   const results = sel.loading
     ? `<div class="me-lsrc-note small muted">正在搜索…</div>`
-    : (sel.results.length
-      ? `<div class="me-lsrc-list">${sel.results.map((item, index) => lyricsSourceRow(item, index, sel.busy === index)).join('')}</div>`
-      : `<div class="me-lsrc-note small muted">${esc(sel.hint || '填好搜索词后点「搜索」，选中含歌词的候选会填进右侧编辑区。')}</div>`);
+    : (groups.length
+      ? `<div class="me-lsrc-list">${groups.map((group) => `
+          <div class="me-lsrc-group">
+            <div class="me-lsrc-group-head">${esc(group.label)}
+              <span class="small muted">${group.rows.length} 条</span></div>
+            ${group.rows.map(({ item, position }) => lyricsSourceRow(item, position, sel.busy === position)).join('')}
+          </div>`).join('')}</div>`
+      : `<div class="me-lsrc-note small muted">${esc(sel.hint || '填好搜索词后点「搜索」，点「填入编辑区」才会取正文。')}</div>`);
   return `
     <div class="me-lsrc-head">
       <span class="me-lpane-title">从音源搜词</span>
@@ -1776,39 +1814,51 @@ function lyricsSourceHtml(lyr, track) {
           <input data-lsrc-field="album" value="${esc(sel.form.album)}" placeholder="专辑"></label>
       </div>
       <div class="field">
-        <span class="field-label">来源平台（不选则搜全部已启用）</span>
+        <span class="field-label">来源平台（不选则搜全部已启用的可取词来源）</span>
         <div class="cand-row">
           <button class="cand-chip${sel.form.source ? '' : ' active'}" type="button" data-lsrc-source="">
             <b>全部已启用</b><span>逐平台并发搜</span></button>
           ${chips}
         </div>
+        ${usable ? '' : '<p class="small muted">当前没有可取词的来源：先到「刮削设置」启用网易云 / QQ音乐 / 酷狗 / 酷我之一。</p>'}
       </div>
       <div class="btn-row me-lsrc-bar">
         <button class="primary-btn small" type="button" data-lsrc-search>${sel.loading ? '正在搜索…' : '搜索'}</button>
-        <span class="small muted">歌词只在点「保存歌词」时写入，选中候选不会动文件。</span>
+        <span class="small muted">取词只读：填进编辑区不会动文件，点「保存歌词」才写盘。</span>
       </div>
+      ${lyricsSourceStats(sel)}
       ${results}
       <p class="small muted me-lsrc-foot">
-        预览接口只报告「将写入的字段」：本曲目已有歌词时后端不会再列出歌词，所以「尝试取词」拿不到不代表来源没有词。
+        取不到词时会显示音源给的具体原因（该来源不支持按 id 取词 / 接口无返回 / 该歌曲没有歌词），不编造歌词。
       </p>
       <p class="small muted">文件：<span class="mono">${esc(track.path || '')}</span></p>
     </div>`;
 }
 
+/** 逐源交代这次搜索：几个候选、这次有没有搜成，避免「亮着却空着」。 */
+function lyricsSourceStats(sel) {
+  const stats = sel.stats || [];
+  if (!stats.length) return '';
+  const rows = stats.map((row) => (
+    `<span class="badge ${row.ok ? (row.count ? 'ok' : '') : 'bad'}"
+       title="${esc(row.note || '')}">${esc(row.label)} ${row.ok ? `${row.count} 条` : esc(row.note || '接口无返回')}</span>`
+  )).join('');
+  return `<div class="me-lsrc-stats small muted">本次搜索：${rows}</div>`;
+}
+
 function lyricsSourceRow(item, index, busy = false) {
   const meta = item.metadata || {};
   const hasLyrics = String(meta.lyrics || '').trim().length > 0;
-  const probe = {
-    ok: '<span class="badge info">来源可提供歌词（接口不返回正文）</span>',
-    none: `<span class="badge warn">${esc(LYRIC_NO_SOURCE)}</span>`,
-    unknown: '<span class="badge warn">无法确认：预览接口不返回歌词正文</span>',
-  }[item._probe] || '';
-  const action = hasLyrics
-    ? `<button class="primary-btn small" type="button" data-lsrc-fill="${index}">填入编辑区</button>`
-    : (item.can_fetch_lyrics
-      ? `<button class="ghost-btn small" type="button" data-lsrc-fetch="${index}" ${busy ? 'disabled' : ''}>
-          ${busy ? '正在取词…' : '尝试取词'}</button>`
-      : '<span class="small muted">无歌词可用</span>');
+  // 后端取词失败时把原因挂在候选上，这里是唯一展示它的位置
+  const failed = item._lyricsReason
+    ? `<span class="badge warn" title="${esc(item._lyricsReason)}">${esc(item._lyricsReason)}</span>`
+    : '';
+  // 一个动作：填入编辑区。候选自带词就地填，没带词走后端取词端点，拿到正文才填。
+  const action = !item.can_fetch_lyrics && !hasLyrics
+    ? '<span class="small muted">该来源不支持取词</span>'
+    : `<button class="${hasLyrics ? 'primary-btn' : 'ghost-btn'} small" type="button"
+         data-lsrc-fill="${index}" data-need-fetch="${hasLyrics ? '0' : '1'}" ${busy ? 'disabled' : ''}>
+         ${busy ? '正在取词…' : '填入编辑区'}</button>`;
   return `<article class="me-lsrc-item">
     <div class="scrape-score ${scoreTone(item.score)}" title="匹配度 1–10"><b>${item.score}</b><span>/10</span></div>
     <div class="scrape-main">
@@ -1816,8 +1866,8 @@ function lyricsSourceRow(item, index, busy = false) {
       <div class="scrape-sub">${esc([meta.artist, meta.album].filter(Boolean).join(' · ') || '—')}</div>
       <div class="scrape-tags">
         <span class="badge">${esc(item.source_label || sourceLabel(meta.source))}</span>
-        ${hasLyrics ? '<span class="badge ok">含歌词</span>' : '<span class="badge">无歌词</span>'}
-        ${probe}
+        ${hasLyrics ? '<span class="badge ok">含歌词</span>' : '<span class="badge">列表不带词</span>'}
+        ${failed}
       </div>
     </div>
     <div class="btn-row">${action}</div>
@@ -1853,6 +1903,7 @@ async function searchLyricsSource(box, lyr) {
   Object.assign(lyr.select.form, readLyricsSourceForm(box));
   lyr.select.loading = true;
   lyr.select.hint = '';
+  lyr.select.stats = [];
   lyr.select.results = [];
   paintLyricsSource(box, lyr);
   try {
@@ -1867,14 +1918,22 @@ async function searchLyricsSource(box, lyr) {
       },
     });
     if (editor.path !== path) return;
+    // 搜索结果自带每个源的真实可用状态，顺手刷新 chips（不必先进音乐库页）
+    if (payload.sources && payload.sources.length) state.library.sources = payload.sources;
     lyr.select.results = payload.results || [];
+    lyr.select.stats = payload.source_stats || [];
+    // 逐源交代这次搜索：0 条 vs 没搜成要分开说，不能含糊
+    const failed = lyr.select.stats.filter((row) => !row.ok);
     lyr.select.hint = lyr.select.results.length
       ? ''
       : (payload.searched && payload.searched.length
-        ? '没有搜到结果，换个平台或改改搜索词试试'
+        ? (failed.length
+          ? `没有搜到结果：${failed.map((row) => `${row.label} ${row.note || '接口无返回'}`).join('、')}`
+          : '没有搜到结果，换个平台或改改搜索词试试')
         : '没有可用的来源平台，请先在设置里启用');
   } catch (error) {
     lyr.select.results = [];
+    lyr.select.stats = [];
     lyr.select.hint = error.message;
   } finally {
     lyr.select.loading = false;
@@ -1893,40 +1952,37 @@ function fillLyricsFromCandidate(box, lyr, index) {
   toast(LYRIC_HINT);
 }
 
-/** 候选自带的歌词为空时，用 apply(dry_run) 探一次音源到底有没有词；拿不到就如实说。 */
-async function probeLyricsForCandidate(box, lyr, index) {
+/** 候选没带词就走 POST /api/library/lyrics/fetch 取正文：拿到才填，拿不到说清原因。 */
+async function fetchLyricsForCandidate(box, lyr, index) {
   const path = editor.path;
   const item = lyr.select.results[index];
+  const meta = item?.metadata || {};
   if (!path || !item || lyr.select.busy >= 0) return;
+  if (!item.can_fetch_lyrics) {
+    toast('该来源不支持按 id 取词', true);
+    return;
+  }
   lyr.select.busy = index;
+  item._lyricsReason = '';
   paintLyricsSource(box, lyr);
   try {
-    const payload = await api('/api/library/apply', {
+    const payload = await api('/api/library/lyrics/fetch', {
       method: 'POST',
-      body: {
-        path,
-        metadata: item.metadata,
-        with_lyrics: true,
-        fetch_lyrics: true,
-        dry_run: true,   // 只看「将写入什么」，一个字都不落盘
-      },
+      body: { source: meta.source || '', external_id: meta.external_id || '', album: meta.album || null, title: meta.title || null },
     });
-    const planned = [...(payload.would_write || []), ...(payload.written || [])];
-    // 预览只报告「将写入的字段」：本曲目已有歌词时后端不会再列 lyrics，这时只能说「无法确认」，
-    // 不能反过来断言「该来源没有歌词」。
-    const mine = mediaTrack();
-    const already = lyr.draft === null ? !!(mine && mine.has_lyrics) : !!String(lyr.draft).trim();
-    if (planned.includes('lyrics')) {
-      item._probe = 'ok';
-      toast('该来源能取到歌词，但接口不返回歌词正文，填不进编辑区（不编造歌词）', true);
-    } else if (already) {
-      item._probe = 'unknown';
-      toast('这首已有歌词，预览接口不会再列出歌词，无法确认该来源有没有词', true);
-    } else {
-      item._probe = 'none';
-      toast(LYRIC_NO_SOURCE, true);
+    if (editor.path !== path) return;
+    const text = String(payload.lyrics || '');
+    if (text.trim()) {
+      setLyricsDraft(box, lyr, text);
+      lyr.select.open = false;
+      toast(LYRIC_HINT);
+      return;
     }
+    // 后端给的是具体原因，原样显示，不换成笼统的「没有提供歌词」
+    item._lyricsReason = payload.reason || '接口无返回';
+    toast(`取词失败：${item._lyricsReason}`, true);
   } catch (error) {
+    item._lyricsReason = error.message;
     toast(error.message, true);
   } finally {
     lyr.select.busy = -1;
@@ -2014,7 +2070,7 @@ function bindLyricsControls(box) {
       return;
     }
     const hit = event.target.closest?.('[data-lsrc-open],[data-lsrc-close],[data-lsrc-search],[data-lsrc-source],' +
-      '[data-lsrc-fill],[data-lsrc-fetch],[data-me-format],[data-me-clear],[data-me-lyrics-save],' +
+      '[data-lsrc-fill],[data-me-format],[data-me-clear],[data-me-lyrics-save],' +
       '[data-me-find-prev],[data-me-find-next]');
     if (!hit || !box.contains(hit) || editor.tab !== 'lyrics') return;
     const lyr = editor.lyrics[editor.path];
@@ -2035,8 +2091,13 @@ function bindLyricsControls(box) {
       return;
     }
     if (hit.dataset.lsrcSearch !== undefined) { searchLyricsSource(box, lyr); return; }
-    if (hit.dataset.lsrcFill !== undefined) { fillLyricsFromCandidate(box, lyr, Number(hit.dataset.lsrcFill)); return; }
-    if (hit.dataset.lsrcFetch !== undefined) { probeLyricsForCandidate(box, lyr, Number(hit.dataset.lsrcFetch)); return; }
+    if (hit.dataset.lsrcFill !== undefined) {
+      const index = Number(hit.dataset.lsrcFill);
+      // 候选自带词就别白跑一趟网络；没带词的才去音源取正文
+      if (hit.dataset.needFetch === '1') fetchLyricsForCandidate(box, lyr, index);
+      else fillLyricsFromCandidate(box, lyr, index);
+      return;
+    }
     if (hit.dataset.meFormat !== undefined) {
       const text = lyricsDraftText(lyr);
       if (!text.trim()) { toast('编辑区还没有歌词', true); return; }

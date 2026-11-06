@@ -16,6 +16,7 @@ from musicpilot.api.context import AppContext, get_context
 from musicpilot.api.schemas import (
     LibraryFillRequest,
     LibraryLyricsApply,
+    LibraryLyricsFetch,
     LibraryScrapeApply,
     LibrarySearchRequest,
 )
@@ -31,15 +32,34 @@ SCRAPE_SOURCES = ("musicbrainz", "netease", "qq", "kugou", "kuwo")
 
 
 def _sources_payload(context: AppContext, runtime: Any) -> list[dict[str, Any]]:
+    """每个源输出「启用 / 能不能搜 / 能不能取词 / 限制说明」，供前端置灰与提示。
+
+    原则：不允许出现 chip 显示可用、实际搜不出东西的源。能用的就说能用，
+    不能用的就把原因写在用户看得见的地方。
+    """
     enabled = [name for name in runtime.metadata_sources if name in SCRAPE_SOURCES]
-    return [
-        {
-            "id": name,
-            "label": SOURCE_LABELS.get(name, name),
-            "enabled": name in enabled,
-        }
-        for name in SCRAPE_SOURCES
-    ]
+    status = context.metadata.source_status()
+    payload: list[dict[str, Any]] = []
+    for name in SCRAPE_SOURCES:
+        info = status.get(name, {})
+        available = bool(info.get("search", name in context.metadata.providers))
+        lyrics = bool(info.get("lyrics"))
+        search_note = str(info.get("search_note") or "")
+        lyrics_note = str(info.get("lyrics_note") or "")
+        note = "；".join(part for part in (search_note, lyrics_note) if part)
+        payload.append(
+            {
+                "id": name,
+                "label": SOURCE_LABELS.get(name, name),
+                "enabled": name in enabled,
+                "available": available,
+                "lyrics": lyrics,
+                "search_note": search_note,
+                "lyrics_note": lyrics_note,
+                "note": note,
+            }
+        )
+    return payload
 
 
 def _track_or_404(context: AppContext, path: str) -> LibraryTrack:
@@ -100,10 +120,16 @@ async def _search_one(
     source: str,
     query: TrackMetadata,
     limit: int,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
+    """搜一个源，并且把「搜到几条 / 这次有没有搜成」一起带回来。
+
+    「可用但这次 0 条」和「接口挂了」在界面上要分得开：前者只提示本次没结果，
+    后者才说明这个源现在不可用 —— 不能让 chip 亮着却悄悄空着。
+    """
     provider = context.metadata.providers.get(source)
+    label = SOURCE_LABELS.get(source, source)
     if provider is None:
-        return []
+        return {"source": source, "label": label, "ok": False, "items": [], "note": "该来源未就绪"}
     try:
         found = await provider.search(
             title=query.title,
@@ -112,20 +138,31 @@ async def _search_one(
             limit=limit,
         )
     except Exception:  # noqa: BLE001 - 网络/接口异常按「没搜到」处理
-        return []
-    items = []
-    for candidate in found:
-        items.append(
-            _candidate_payload(track, candidate, lyrics_fetcher=context.metadata)
-        )
-    return items
+        return {
+            "source": source,
+            "label": label,
+            "ok": False,
+            "items": [],
+            "note": "接口无返回",
+        }
+    supports = bool(getattr(provider, "supports_lyrics", False))
+    return {
+        "source": source,
+        "label": label,
+        "ok": True,
+        "note": str(getattr(provider, "search_note", "") or ""),
+        "items": [
+            _candidate_payload(track, candidate, can_fetch_lyrics=supports)
+            for candidate in found
+        ],
+    }
 
 
 def _candidate_payload(
     track: LibraryTrack,
     candidate: TrackMetadata,
     *,
-    lyrics_fetcher: Any | None = None,
+    can_fetch_lyrics: bool = False,
 ) -> dict[str, Any]:
     query = track.metadata
     if not query.title.strip():
@@ -140,7 +177,8 @@ def _candidate_payload(
                   if getattr(candidate, name, None)],
         "metadata": meta,
         "source_label": SOURCE_LABELS.get(candidate.source, candidate.source),
-        "can_fetch_lyrics": bool(lyrics_fetcher),
+        # 候选自带歌词就能直接填；没带但是支持按 id 取词的，前端可以点「尝试取词」
+        "can_fetch_lyrics": bool(can_fetch_lyrics),
     }
 
 
@@ -179,8 +217,18 @@ async def library_search(
     )
     results: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    source_stats = [
+        {
+            "id": batch["source"],
+            "label": batch["label"],
+            "count": len(batch["items"]),
+            "ok": batch["ok"],
+            "note": batch.get("note", ""),
+        }
+        for batch in batches
+    ]
     for batch in batches:
-        for item in batch:
+        for item in batch["items"]:
             meta = item["metadata"]
             key = (
                 str(meta.get("title") or "").casefold(),
@@ -201,20 +249,18 @@ async def library_search(
         },
         "sources": _sources_payload(context, runtime),
         "searched": names,
+        "source_stats": source_stats,
         "results": results,
     }
 
 
-async def _lyrics_for(context: AppContext, meta: TrackMetadata) -> str | None:
-    """按候选自带的 id 去对应音源取歌词；没有 id 就不查，绝不乱猜。"""
-    if not meta.external_id or meta.source not in SCRAPE_SOURCES:
-        return None
-    if meta.source not in context.metadata.providers:
-        return None
-    try:
-        return clean_lyrics(await context.metadata.lyrics_for(meta))
-    except Exception:  # noqa: BLE001 - 歌词拿不到不影响写标签
-        return None
+async def _fetch_lyrics(context: AppContext, meta: TrackMetadata) -> Any:
+    """按候选自带的 id 去对应音源取词；没有 id 就不查，绝不乱猜。"""
+    if meta.source not in SCRAPE_SOURCES:
+        from musicpilot.adapters.metadata.base import REASON_UNSUPPORTED, LyricsResult
+
+        return LyricsResult(reason=REASON_UNSUPPORTED)
+    return await context.metadata.fetch_lyrics(meta)
 
 
 @router.post("/apply")
@@ -230,10 +276,13 @@ async def library_apply(
         raise HTTPException(status_code=400, detail="候选缺少歌曲名")
     # 歌词是加分项，但要单独点「抓取歌词」才去请求音源：
     # 用户只想要封面/专辑信息时，不该顺带对第三方多发一次请求。
+    lyrics_reason = ""
     if payload.fetch_lyrics and not (meta.lyrics or "").strip():
-        fetched = await _lyrics_for(context, meta)
-        if fetched:
-            meta = replace(meta, lyrics=fetched)
+        fetched = await _fetch_lyrics(context, meta)
+        if fetched.text:
+            meta = replace(meta, lyrics=fetched.text)
+        else:
+            lyrics_reason = fetched.reason
     result = await context.library.fill_track(
         track,
         remote=meta,
@@ -271,6 +320,7 @@ async def library_apply(
             FIELD_LABELS.get(name, name) for name in result.get("would_write") or []
         ],
         "skipped": result.get("skipped", ""),
+        "lyrics_reason": lyrics_reason,
         "moved": False,
         "still_missing": missing,
         "still_missing_labels": [FIELD_LABELS.get(name, name) for name in missing],
@@ -290,6 +340,34 @@ def _apply_message(result: dict[str, Any], dry_run: bool) -> str:
         "write_failed": "写标签失败，格式可能不支持",
     }.get(str(result.get("skipped") or ""), "没有可写入的字段")
     return reason
+
+
+@router.post("/lyrics/fetch")
+async def library_lyrics_fetch(
+    payload: LibraryLyricsFetch,
+    context: AppContext = Depends(get_context),
+) -> dict[str, Any]:
+    """按候选 id 去对应音源取歌词正文：只读，绝不写文件、不动标签与位置。
+
+    这是「从音源搜词」拿到正文的唯一通道：拿不到就老实说为什么拿不到，
+    不编造歌词，也不把「拿不到」笼统说成「没有」。
+    """
+    source = (payload.source or "").strip().lower()
+    if source not in SCRAPE_SOURCES:
+        raise HTTPException(status_code=400, detail="不支持的来源平台")
+    meta = TrackMetadata(
+        title=(payload.title or "").strip(),
+        album=(payload.album or "").strip() or None,
+        source=source,
+        external_id=payload.external_id.strip(),
+    )
+    result = await _fetch_lyrics(context, meta)
+    return {
+        "lyrics": clean_lyrics(result.text),
+        "source": source,
+        "source_label": SOURCE_LABELS.get(source, source),
+        "reason": "" if result.text else (result.reason or "该歌曲没有歌词"),
+    }
 
 
 @router.put("/lyrics")

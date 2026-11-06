@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from musicpilot.domain.models import TrackMetadata
@@ -53,10 +54,32 @@ def candidate_from_dict(payload: dict[str, object]) -> TrackMetadata:
     )
 
 
+# 取词失败的三种真实原因：接口不支持、请求没回来、歌确实没词。
+# 三者不许混为一谈，更不许拿「没有」笼统盖掉「拿不到」。
+REASON_UNSUPPORTED = "该来源不支持按 id 取词"
+REASON_NO_RESPONSE = "接口无返回"
+REASON_NO_LYRICS = "该歌曲没有歌词"
+
+
+@dataclass(frozen=True, slots=True)
+class LyricsResult:
+    """一次按 id 取词的结果：有正文就给正文，没有就带上具体原因。"""
+
+    text: str | None = None
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.text)
+
+    def as_dict(self) -> dict[str, object]:
+        return {"lyrics": self.text, "reason": self.reason}
+
+
 class SupportsLyrics(Protocol):
     """Providers whose search result carries no lyrics but who can fetch them by id."""
 
-    async def lyrics(self, song_id: str, *, album: str | None = None) -> str | None: ...
+    async def lyrics(self, song_id: str, *, album: str | None = None) -> LyricsResult: ...
 
 
 def clean_lyrics(text: str | None) -> str | None:

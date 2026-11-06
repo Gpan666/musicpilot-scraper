@@ -1,26 +1,42 @@
-"""酷狗音乐：搜索走 mobilecdn 的公开接口，歌词走 krc 接口。
+"""酷狗音乐：搜索走 song_search_v2，歌词走 krcs 的 search + download。
 
-两处都不一样：搜索是普通 JSON（``data.info``），歌词是 ``krc1|"内容"|`` 这种
-带前缀和后缀的包裹格式，取中间那段再处理。
+旧的 ``mobilecdn.kugou.com/api/v3/search/song`` 现在稳定返回空 body（接口已失效），
+换成网页版在用的 ``songsearch.kugou.com/song_search_v2``：``data.lists`` 里每首带
+``FileHash`` / ``SingerName`` / ``AlbumName``，FileHash 就是取词用的 id。
+
+歌词两步走：``krcs.kugou.com/search?hash=<FileHash>`` 拿 candidates（id + accesskey），
+再 ``krcs.kugou.com/download?fmt=lrc`` 拿正文。download 在 ``lyrics.kugou.com`` 上会挂住不返回，
+所以两个请求都只打 ``krcs.kugou.com``。``fmt=lrc`` 回的是 base64 包裹的 LRC（不是 krc 格式），
+解出来直接用；万一回了 ``krc1|"..."|`` 老包裹，先剥壳再当 LRC。
 """
 
 from __future__ import annotations
 
+import base64
 import re
 from typing import Any
 
 import httpx
 
-from musicpilot.adapters.metadata.base import clean_lyrics, join_names
+from musicpilot.adapters.metadata.base import (
+    REASON_NO_LYRICS,
+    REASON_NO_RESPONSE,
+    LyricsResult,
+    clean_lyrics,
+    join_names,
+)
 from musicpilot.domain.models import TrackMetadata
 
-_SEARCH_URL = "https://mobilecdn.kugou.com/api/v3/search/song"
-_LYRIC_URL = "https://krcs.kugou.com/search"
-_LYRIC_DOWNLOAD_URL = "https://lyrics.kugou.com/download"
+_SEARCH_URL = "https://songsearch.kugou.com/song_search_v2"
+_LYRIC_SEARCH_URL = "https://krcs.kugou.com/search"
+_LYRIC_DOWNLOAD_URL = "https://krcs.kugou.com/download"
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+    "Referer": "https://www.kugou.com/",
 }
 _KRC_WRAPPED = re.compile(r'krc1\|"(?P<body>.*)"\|\s*$', re.S)
+_HTML_TAG = re.compile(r"<[^>]+>")
+_BASE64 = re.compile(r"^[A-Za-z0-9+/=\s]+$")
 
 
 def _strip_krc(text: str) -> str:
@@ -32,8 +48,15 @@ def _strip_krc(text: str) -> str:
     return body
 
 
+def _plain(text: Any) -> str:
+    return _HTML_TAG.sub("", str(text or "")).replace("&nbsp;", " ").strip()
+
+
 class KugouProvider:
     name = "kugou"
+    supports_lyrics = True
+    lyrics_note = ""
+    search_note = ""
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client
@@ -51,11 +74,15 @@ class KugouProvider:
             response = await self._client.get(
                 _SEARCH_URL,
                 params={
-                    "format": "json",
                     "keyword": keyword,
                     "page": 1,
                     "pagesize": max(1, min(limit * 2, 20)),
-                    "showtype": 1,
+                    "userid": -1,
+                    "clientver": 2000,
+                    "platform": "WebFilter",
+                    "filter": 2,
+                    "iscorrection": 1,
+                    "privilege_filter": 0,
                 },
                 headers=_HEADERS,
             )
@@ -64,23 +91,20 @@ class KugouProvider:
         except Exception:  # noqa: BLE001
             return []
         data = payload.get("data") if isinstance(payload, dict) else None
-        songs = data.get("info", []) if isinstance(data, dict) else []
+        songs = data.get("lists", []) if isinstance(data, dict) else []
         candidates: list[TrackMetadata] = []
         for song in songs if isinstance(songs, list) else []:
             if not isinstance(song, dict):
                 continue
-            name = str(song.get("songname") or "").strip()
-            # 带 <em> 高亮标签，搜索结果里常见，去掉再用
-            name = re.sub(r"<[^>]+>", "", name).strip()
-            hash_id = song.get("hash") or song.get("320hash") or song.get("sqhash")
+            name = _plain(song.get("SongName"))
+            hash_id = song.get("FileHash") or song.get("EMixSongID")
             if not name or not hash_id:
                 continue
-            album_name = re.sub(r"<[^>]+>", "", str(song.get("album_name") or "")).strip()
             candidates.append(
                 TrackMetadata(
                     title=name,
-                    artist=join_names(str(song.get("singername") or "").split("、")),
-                    album=album_name or None,
+                    artist=join_names(_plain(song.get("SingerName")).split("、")),
+                    album=_plain(song.get("AlbumName")) or None,
                     source=self.name,
                     external_id=str(hash_id),
                 )
@@ -89,10 +113,10 @@ class KugouProvider:
                 break
         return candidates
 
-    async def lyrics(self, song_id: str, *, album: str | None = None) -> str | None:
+    async def lyrics(self, song_id: str, *, album: str | None = None) -> LyricsResult:
         try:
             found = await self._client.get(
-                _LYRIC_URL,
+                _LYRIC_SEARCH_URL,
                 params={
                     "ver": 1,
                     "man": "yes",
@@ -105,13 +129,16 @@ class KugouProvider:
             )
             found.raise_for_status()
             payload = found.json()
-            candidates = payload.get("candidates") if isinstance(payload, dict) else None
-            if not isinstance(candidates, list) or not candidates:
-                return None
-            first = candidates[0] if isinstance(candidates[0], dict) else {}
-            lyric_id, accesskey = first.get("id"), first.get("accesskey")
-            if not lyric_id or not accesskey:
-                return None
+        except Exception:  # noqa: BLE001
+            return LyricsResult(reason=REASON_NO_RESPONSE)
+        candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        if not isinstance(candidates, list) or not candidates:
+            return LyricsResult(reason=REASON_NO_LYRICS)
+        first = candidates[0] if isinstance(candidates[0], dict) else {}
+        lyric_id, accesskey = first.get("id"), first.get("accesskey")
+        if not lyric_id or not accesskey:
+            return LyricsResult(reason=REASON_NO_LYRICS)
+        try:
             download = await self._client.get(
                 _LYRIC_DOWNLOAD_URL,
                 params={
@@ -127,17 +154,17 @@ class KugouProvider:
             download.raise_for_status()
             body = download.json()
         except Exception:  # noqa: BLE001
-            return None
-        content: Any = body.get("content") if isinstance(body, dict) else None
-        if not isinstance(content, str):
-            return None
-        text = _strip_krc(content)
-        # 接口偶尔直接给 base64，兜一层
-        if not text.strip().startswith("[") and re.fullmatch(r"[A-Za-z0-9+/=\n]+", text.strip() or "x"):
-            import base64
-
+            return LyricsResult(reason=REASON_NO_RESPONSE)
+        content = body.get("content") if isinstance(body, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            return LyricsResult(reason=REASON_NO_LYRICS)
+        text = content.strip()
+        # fmt=lrc 回的是 base64 包裹的 LRC（老包裹 ``krc1|"..."|`` 也走这条路）；先解再剥壳。
+        # 已经是明文 LRC 的（以 ``[ti:`` 这类标签开头）就别再动它。
+        if not text.startswith("[") and not text.startswith("krc1|") and _BASE64.match(text):
             try:
-                text = base64.b64decode(text).decode("utf-8", "ignore")
+                text = base64.b64decode(text, validate=False).decode("utf-8", "ignore")
             except Exception:  # noqa: BLE001
-                return None
-        return clean_lyrics(text)
+                return LyricsResult(reason=REASON_NO_RESPONSE)
+        text = clean_lyrics(_strip_krc(text))
+        return LyricsResult(text=text) if text else LyricsResult(reason=REASON_NO_LYRICS)

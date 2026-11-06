@@ -12,6 +12,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from musicpilot.adapters.metadata.base import (
+    REASON_NO_LYRICS,
+    REASON_NO_RESPONSE,
+    REASON_UNSUPPORTED,
+)
 from musicpilot.adapters.metadata.service import MetadataService
 from musicpilot.adapters.store import Store
 from musicpilot.config import load_settings
@@ -481,3 +486,190 @@ def test_metadata_service_exposes_each_platform() -> None:
             await service.shutdown()
 
     asyncio.run(scenario())
+
+
+# ------------------------------------------------------------- 从音源取词（只读）
+
+
+class FakeLyricsProvider(FakeProvider):
+    """能按 id 取词的替身：歌词正文由用例给定，取不到时给出具体原因。"""
+
+    supports_lyrics = True
+    lyrics_note = ""
+    search_note = ""
+
+    def __init__(self, candidates: list[TrackMetadata], text: str | None = None,
+                 reason: str = "") -> None:
+        super().__init__(candidates)
+        self.text = text
+        self.reason = reason
+        self.lyric_calls: list[str] = []
+
+    async def lyrics(self, song_id: str, *, album: str | None = None) -> Any:
+        from musicpilot.adapters.metadata.base import LyricsResult
+
+        self.lyric_calls.append(song_id)
+        return LyricsResult(text=self.text, reason=self.reason)
+
+
+class NoLyricsProvider(FakeProvider):
+    """像 MusicBrainz 那样：能搜，但根本不提供歌词。"""
+
+    supports_lyrics = False
+    lyrics_note = "MusicBrainz 不提供歌词正文"
+    search_note = ""
+
+
+def test_lyrics_fetch_returns_the_real_lyrics_text(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    path = make_mp3(workspace["library"] / "t.mp3", {"title": "晴天", "artist": "周杰伦"})
+    before = _snapshot(workspace["library"])
+    context = _client_context(client)
+    provider = FakeLyricsProvider(
+        [TrackMetadata(title="晴天", artist="周杰伦", source="netease", external_id="186016")],
+        text="[00:01.00]故事的小黄花\n[00:02.00]从出生那年就飘着",
+    )
+    context.metadata.providers["netease"] = provider
+
+    payload = client.post(
+        "/api/library/lyrics/fetch",
+        json={"source": "netease", "external_id": "186016", "album": "叶惠美"},
+    ).json()
+    assert payload["lyrics"] == "[00:01.00]故事的小黄花\n[00:02.00]从出生那年就飘着"
+    assert payload["reason"] == ""
+    assert payload["source"] == "netease"
+    assert provider.lyric_calls == ["186016"]
+    # 只读端点：一个字都不许写盘
+    assert _snapshot(workspace["library"]) == before
+    assert tag_value(path, "title") == "晴天"
+
+
+def test_lyrics_fetch_reports_unsupported_source(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    make_mp3(workspace["library"] / "t.mp3", {"title": "歌"})
+    _client_context(client).metadata.providers["musicbrainz"] = NoLyricsProvider([])
+    payload = client.post(
+        "/api/library/lyrics/fetch", json={"source": "musicbrainz", "external_id": "mbid-1"}
+    ).json()
+    assert payload["lyrics"] is None
+    assert payload["reason"] == REASON_UNSUPPORTED
+
+
+def test_lyrics_fetch_reports_no_response_and_no_lyrics_separately(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    make_mp3(workspace["library"] / "t.mp3", {"title": "歌"})
+    context = _client_context(client)
+    context.metadata.providers["qq"] = FakeLyricsProvider([], reason=REASON_NO_RESPONSE)
+    context.metadata.providers["kugou"] = FakeLyricsProvider([], reason=REASON_NO_LYRICS)
+
+    broken = client.post(
+        "/api/library/lyrics/fetch", json={"source": "qq", "external_id": "mid"}
+    ).json()
+    empty = client.post(
+        "/api/library/lyrics/fetch", json={"source": "kugou", "external_id": "hash"}
+    ).json()
+    assert broken["lyrics"] is None and broken["reason"] == REASON_NO_RESPONSE
+    assert empty["lyrics"] is None and empty["reason"] == REASON_NO_LYRICS
+
+
+def test_lyrics_fetch_rejects_unknown_source(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    make_mp3(workspace["library"] / "t.mp3", {"title": "歌"})
+    response = client.post(
+        "/api/library/lyrics/fetch", json={"source": "piracy-bay", "external_id": "1"}
+    )
+    assert response.status_code == 400
+
+
+def test_sources_payload_exposes_availability_and_notes(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    make_mp3(workspace["library"] / "t.mp3", {"title": "歌"})
+    context = _client_context(client)
+    context.metadata.providers["musicbrainz"] = NoLyricsProvider([])
+    context.metadata.providers["netease"] = FakeLyricsProvider([])
+    payload = client.get("/api/library").json()
+    by_id = {item["id"]: item for item in payload["sources"]}
+    assert set(by_id) == {"musicbrainz", "netease", "qq", "kugou", "kuwo"}
+    assert by_id["netease"]["available"] is True and by_id["netease"]["lyrics"] is True
+    # 不能取词的源必须如实标出来，前端才好置灰
+    assert by_id["musicbrainz"]["lyrics"] is False
+    assert "歌词" in by_id["musicbrainz"]["lyrics_note"]
+    assert by_id["musicbrainz"]["note"]
+
+
+def test_apply_reports_lyrics_reason_instead_of_pretending_none(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    path = make_mp3(workspace["library"] / "t.mp3", {"title": "歌", "artist": "歌手"})
+    _enable_tag_writing(client)
+    _client_context(client).metadata.providers["netease"] = FakeLyricsProvider(
+        [], reason=REASON_NO_RESPONSE
+    )
+    payload = client.post(
+        "/api/library/apply",
+        json={
+            "path": str(path),
+            "metadata": {"title": "歌", "artist": "歌手", "source": "netease", "external_id": "1"},
+            "fetch_lyrics": True,
+        },
+    ).json()
+    assert payload["lyrics_reason"] == REASON_NO_RESPONSE
+    assert "lyrics" not in (payload["written"] or [])
+
+
+def test_search_reports_per_source_stats(client: TestClient, workspace: dict[str, Any]) -> None:
+    """逐源交代：搜到几条 / 这次有没有搜成，界面才分得开「0 条」与「接口挂」。"""
+    path = make_mp3(workspace["library"] / "t.mp3", {"title": "歌"})
+    context = _client_context(client)
+    context.metadata.providers["netease"] = FakeLyricsProvider(
+        [TrackMetadata(title="歌", source="netease", external_id="1")]
+    )
+
+    class BrokenProvider(FakeProvider):
+        supports_lyrics = True
+
+        async def search(self, **kwargs: Any) -> list[TrackMetadata]:
+            raise RuntimeError("接口没回来")
+
+    context.metadata.providers["qq"] = BrokenProvider([])
+    assert client.put(
+        "/api/settings", json={"values": {"metadata_sources": ["local", "netease", "qq"]}}
+    ).status_code == 200
+
+    payload = client.post("/api/library/search", json={"path": str(path), "source": ""}).json()
+    stats = {row["id"]: row for row in payload["source_stats"]}
+    assert stats["netease"]["ok"] is True and stats["netease"]["count"] == 1
+    assert stats["qq"]["ok"] is False and stats["qq"]["count"] == 0
+    assert stats["qq"]["note"] == "接口无返回"
+
+
+def test_search_marks_candidates_fetchable_only_when_source_supports_lyrics(
+    client: TestClient, workspace: dict[str, Any]
+) -> None:
+    path = make_mp3(workspace["library"] / "t.mp3", {"title": "歌"})
+    context = _client_context(client)
+    # 两首同名会让去重把它们合成一条，所以用两个明显不同的候选
+    context.metadata.providers["kugou"] = FakeLyricsProvider(
+        [TrackMetadata(title="有词的歌", artist="甲", source="kugou", external_id="h")]
+    )
+    context.metadata.providers["musicbrainz"] = NoLyricsProvider(
+        [TrackMetadata(title="没词的歌", artist="乙", source="musicbrainz", external_id="mb")]
+    )
+    assert client.put(
+        "/api/settings",
+        json={"values": {"metadata_sources": ["local", "kugou", "musicbrainz"]}},
+    ).status_code == 200
+    payload = client.post(
+        "/api/library/search",
+        json={"path": str(path), "source": "", "title": "歌", "limit": 10},
+    ).json()
+    flags = {
+        item["metadata"]["source"]: item["can_fetch_lyrics"] for item in payload["results"]
+    }
+    assert flags["kugou"] is True
+    assert flags["musicbrainz"] is False

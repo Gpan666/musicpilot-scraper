@@ -48,6 +48,11 @@ def _track_number(value: Any) -> int | None:
 
 class MusicBrainzProvider:
     name = "musicbrainz"
+    # MusicBrainz 是元数据数据库，本身不存歌词正文；中文曲库覆盖也低。
+    # 这里如实标记，不假装能取词，也不凭空造词。
+    supports_lyrics = False
+    lyrics_note = "MusicBrainz 不提供歌词正文"
+    search_note = "仅适合英文 / 国际曲目，中文曲库覆盖很低"
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client

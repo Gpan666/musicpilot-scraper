@@ -7,6 +7,12 @@ from typing import Any
 
 import httpx
 
+from musicpilot.adapters.metadata.base import (
+    REASON_NO_LYRICS,
+    REASON_NO_RESPONSE,
+    LyricsResult,
+    clean_lyrics,
+)
 from musicpilot.domain.models import TrackMetadata
 
 _SEARCH_URL = "https://music.163.com/api/search/get/web"
@@ -22,6 +28,9 @@ def _year_from_ms(value: Any) -> int | None:
 
 class NetEaseProvider:
     name = "netease"
+    supports_lyrics = True
+    lyrics_note = ""
+    search_note = ""
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client
@@ -89,7 +98,8 @@ class NetEaseProvider:
                 break
         return candidates
 
-    async def lyrics(self, song_id: str) -> str | None:
+    async def lyrics(self, song_id: str, *, album: str | None = None) -> LyricsResult:
+        """按歌曲 id 取词；拿不到就带上具体原因，不编造也不笼统。"""
         try:
             response = await self._client.get(
                 _LYRIC_URL,
@@ -98,13 +108,13 @@ class NetEaseProvider:
             )
             response.raise_for_status()
             payload = response.json()
-        except Exception:  # noqa: BLE001
-            return None
+        except Exception:  # noqa: BLE001 - 限流 / 断网 / 改版都算「没取到」
+            return LyricsResult(reason=REASON_NO_RESPONSE)
         if not isinstance(payload, dict):
-            return None
+            return LyricsResult(reason=REASON_NO_RESPONSE)
         lrc = payload.get("lrc", {})
         translated = payload.get("tlyric", {})
-        original = str(lrc.get("lyric") or "").strip() if isinstance(lrc, dict) else ""
-        extra = str(translated.get("lyric") or "").strip() if isinstance(translated, dict) else ""
-        combined = "\n".join(part for part in (original, extra) if part)
-        return combined or None
+        original = str(lrc.get("lyric") or "") if isinstance(lrc, dict) else ""
+        extra = str(translated.get("lyric") or "") if isinstance(translated, dict) else ""
+        text = clean_lyrics("\n".join(part for part in (original, extra) if part.strip()))
+        return LyricsResult(text=text) if text else LyricsResult(reason=REASON_NO_LYRICS)

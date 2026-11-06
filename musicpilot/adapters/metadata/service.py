@@ -8,7 +8,13 @@ from typing import Any
 
 import httpx
 
-from musicpilot.adapters.metadata.base import candidate_from_dict
+from musicpilot.adapters.metadata.base import (
+    REASON_NO_LYRICS,
+    REASON_NO_RESPONSE,
+    REASON_UNSUPPORTED,
+    LyricsResult,
+    candidate_from_dict,
+)
 from musicpilot.adapters.metadata.kugou import KugouProvider
 from musicpilot.adapters.metadata.kuwo import KuwoProvider
 from musicpilot.adapters.metadata.musicbrainz import MusicBrainzProvider
@@ -197,23 +203,58 @@ class MetadataService:
             return None
         return await fetch_cover(url, client=self.client)
 
-    async def lyrics_for(self, meta: TrackMetadata) -> str | None:
-        """取歌词：搜索接口自带的先用，否则按来源调各自的歌词接口。"""
-        if meta.lyrics:
-            return meta.lyrics
+    async def fetch_lyrics(self, meta: TrackMetadata) -> LyricsResult:
+        """按候选自带的 id 取词，并且把「为什么没取到」一并带回来。
+
+        三种失败不许混为一谈：来源没有取词能力 / 请求没回来 / 这首歌确实没词。
+        只读取，不写任何文件。
+        """
+        if meta.lyrics and meta.lyrics.strip():
+            return LyricsResult(text=meta.lyrics)
+        if meta.source in ("", "local", "manual"):
+            return LyricsResult(reason=REASON_UNSUPPORTED)
         if not meta.external_id:
-            return None
+            return LyricsResult(reason="候选缺少来源 id，无法按 id 取词")
         provider = self.providers.get(meta.source)
+        if provider is None or not getattr(provider, "supports_lyrics", False):
+            return LyricsResult(reason=REASON_UNSUPPORTED)
         fetch = getattr(provider, "lyrics", None)
         if not callable(fetch):
-            return None
+            return LyricsResult(reason=REASON_UNSUPPORTED)
         try:
-            return await fetch(meta.external_id, album=meta.album)
-        except TypeError:
-            # 网易云的 lyrics 只接一个参数
-            return await fetch(meta.external_id)
+            try:
+                result = await fetch(meta.external_id, album=meta.album)
+            except TypeError:
+                # 个别来源的 lyrics 只接 id
+                result = await fetch(meta.external_id)
         except Exception:  # noqa: BLE001 - 歌词是加分项，拿不到不影响主流程
-            return None
+            return LyricsResult(reason=REASON_NO_RESPONSE)
+        if isinstance(result, LyricsResult):
+            if result.text:
+                return result
+            return LyricsResult(reason=result.reason or REASON_NO_LYRICS)
+        # 兼容只回字符串的老实现
+        text = str(result or "").strip()
+        return LyricsResult(text=text) if text else LyricsResult(reason=REASON_NO_LYRICS)
+
+    async def lyrics_for(self, meta: TrackMetadata) -> str | None:
+        """取歌词正文：拿不到就返回 None（原因见 :meth:`fetch_lyrics`）。"""
+        return (await self.fetch_lyrics(meta)).text
+
+    def source_status(self) -> dict[str, dict[str, Any]]:
+        """每个源的真实能力：能不能搜、能不能按 id 取词、有什么要提前说明的限制。"""
+        status: dict[str, dict[str, Any]] = {}
+        for name in SOURCE_LABELS:
+            if name == "local":
+                continue
+            provider = self.providers.get(name)
+            status[name] = {
+                "search": provider is not None,
+                "lyrics": bool(provider is not None and getattr(provider, "supports_lyrics", False)),
+                "lyrics_note": str(getattr(provider, "lyrics_note", "") or ""),
+                "search_note": str(getattr(provider, "search_note", "") or ""),
+            }
+        return status
 
 
 async def cover_embedding(path: Any) -> tuple[bytes, str] | None:

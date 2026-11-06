@@ -477,10 +477,11 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .fields-row .field { margin-bottom: 0; gap: 4px; }
 .fields-row .field input { padding-block: 8px; }
 
-/* ---------- 概览：4 等分快捷磁贴 + 两行 2 等分面板 ---------- */
+/* ---------- 概览：两行 2 等分面板 ---------- */
 /* 版面用 CSS Grid 显式分栏：间隔由 gap 产生，卡片自己是 border-box，
  * 边框与背景永远不会越出自己的格子，相邻两张卡也不会叠在一起。
- * 每行只有一种列宽（1 / 2 / 4 等分），同行 align-items:stretch 保证等高。 */
+ * 概览只有一种行宽（2 等分），同行 align-items:stretch 保证等高；
+ * 页面入口全在左侧导航，概览里不再有整行快捷磁贴。 */
 .dash-board { display: flex; flex-direction: column; gap: var(--gap); }
 .dash-row {
   display: grid; gap: var(--gap); align-items: stretch;
@@ -492,42 +493,9 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 @media (min-width: 901px) {
   .dash-row > .panel > .empty-bar { margin-block: auto; }
 }
-/* 4 等分（快捷磁贴）与 2 等分（面板对）两种行宽，没有 7:5、没有 5 列 */
-.dash-quick { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .dash-row-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-/* 断点按 4 → 2 → 1 递减收列，任何一档都不留半行空洞：
- * ≤1180 快捷磁贴 4→2，面板行仍 2 等分（同行列数相等）；≤900 面板行落单列；≤620 磁贴也落单列。 */
-@media (max-width: 1180px) {
-  .dash-quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 @media (max-width: 900px) {
   .dash-row-2 { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 620px) {
-  .dash-quick { grid-template-columns: minmax(0, 1fr); }
-}
-/* 快捷磁贴：图标 + 一行文字，整卡高度压到 80 以内。
- * 行内卡片默认是纵向流（.dash-row > .panel），这里按磁贴改回横排。 */
-.dash-row > .quick-tile { flex-direction: row; align-items: center; }
-.quick-tile {
-  display: flex; align-items: center; gap: 10px;
-  min-height: 0; padding: 12px 14px;
-  font-family: inherit; text-align: left; color: var(--text);
-  cursor: pointer;
-  transition: border-color var(--transition), transform var(--transition), background var(--transition);
-}
-.quick-tile:hover { transform: translateY(-2px); border-color: var(--primary); }
-.quick-tile:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.quick-icon {
-  flex: none; display: grid; place-items: center;
-  width: 34px; height: 34px; border-radius: 12px;
-  background: var(--primary-soft); color: var(--primary-soft-text);
-}
-.quick-icon .icon { width: 19px; height: 19px; }
-.quick-label {
-  flex: 1; min-width: 0; font-size: var(--fs-body);
-  font-weight: var(--wght-heading); font-variation-settings: 'wght' var(--wght-heading);
-  overflow-wrap: anywhere;
 }
 /* 库状态速览的三个数字：等分三格，跟着面板宽度伸缩。
  * 面板被同行拉伸时，这三格吃掉多出来的高度，空出来的地方不留白。 */
@@ -2049,7 +2017,15 @@ body.editor-open { overflow: hidden; } /* 编辑器自己滚，背后的列表�
 .me-lsrc-form .field input { font-size: var(--fs-small); padding: 8px 11px; }
 .me-lsrc-bar { align-items: center; }
 .me-lsrc-card .field { margin-bottom: 0; }
-.me-lsrc-list { display: flex; flex-direction: column; gap: 8px; }
+.me-lsrc-list { display: flex; flex-direction: column; gap: 12px; }
+/* 候选按源分组：组头一行写清是哪个平台、几个候选，避免同名结果混在一起 */
+.me-lsrc-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.me-lsrc-group-head {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: var(--fs-small); font-weight: var(--wght-heading);
+  font-variation-settings: 'wght' var(--wght-heading);
+  color: var(--text-2); padding-bottom: 2px; border-bottom: 1px solid var(--divider);
+}
 .me-lsrc-item {
   display: flex; align-items: center; gap: 12px;
   padding: 10px 12px; border-radius: var(--radius-item);
@@ -2057,6 +2033,8 @@ body.editor-open { overflow: hidden; } /* 编辑器自己滚，背后的列表�
 }
 .me-lsrc-item .scrape-main { flex: 1; min-width: 0; }
 .me-lsrc-note { line-height: 1.6; }
+/* 逐源交代：每个平台一个小标，0 条与「没搜成」用不同色，一眼分得开 */
+.me-lsrc-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; line-height: 1.8; }
 .me-lsrc-foot { line-height: 1.6; }
 
 /* 「编辑器宽 <1000px」按弹窗宽度算：弹窗宽 = min(92vw, 1360px)，

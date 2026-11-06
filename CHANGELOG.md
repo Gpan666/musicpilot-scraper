@@ -1,5 +1,28 @@
 ## [Unreleased]
 
+### 变更
+
+- **「从音源搜词」终于能把歌词正文填进编辑器**（后端新增一个只读端点 + 前端搜词面板改造）。
+  - 新增 `POST /api/library/lyrics/fetch`，body `{ source, external_id, album? }` → `{ lyrics, source, reason }`：按候选自带的 id 去对应音源取词，**只读不写**，不动标签、不动文件位置；内部走 `MetadataService.fetch_lyrics()`（`lyrics_for()` 保留为薄封装）。
+  - 失败原因分三种、原样回给前端：`该来源不支持按 id 取词` / `接口无返回` / `该歌曲没有歌词`。酷我那类「接口正常应答但说查询失败」的，把接口原话带出来（`接口返回「音乐查询失败」`），不笼统说成「没有」。
+  - 写入语义一字未改：`PUT /api/library/lyrics` 仍是唯一写词入口；`/api/library/apply` 仍只补空字段，只是多回一个 `lyrics_reason` 字段说明取词为何没拿到。
+  - 前端「填入编辑区」改成调这个端点：拿到正文才填，拿不到就把 `reason` 显示在候选上并 toast；候选自带歌词的仍就地填，不多跑一次网络。
+
+- **QQ / 酷狗 / 酷我 三个源的搜索端点全部换掉，MusicBrainz 如实标注「不提供歌词」**。
+  - QQ 音乐：`c.y.qq.com/soso/fcgi-bin/client_search_cgi` 现在直接 404，换 `u.y.qq.com/cgi-bin/musicu.fcg` 的 `DoSearchForQQMusicMobile`（`req_1.data.body.item_song`，mid 即取词 id）；歌词接口 `fcg_query_lyric_new.fcg` 仍可用，保留。
+  - 酷狗：`mobilecdn.kugou.com/api/v3/search/song` 稳定回空 body，换 `songsearch.kugou.com/song_search_v2`（`data.lists`，`FileHash` 即取词 id）；歌词改用 `krcs.kugou.com` 的 search + download 两步（`lyrics.kugou.com` 的 download 会挂住不返回），`fmt=lrc` 回的是 base64 包裹的 LRC，先解码再剥可能的老 `krc1|"..."|` 壳。
+  - 酷我：`www.kuwo.cn/api/www/...`（搜索与歌词）现在统一回 `The request is illegal!`，换 `search.kuwo.cn/r.s`（`pcjson=1&mobi=1` 才带专辑名与封面，`DC_TARGETID` 即取词 id）与 `m.kuwo.cn/newh5/singles/songinfoandlrc`（`lrclist` 按秒回时间，拼回标准 LRC）。
+  - MusicBrainz：声明 `supports_lyrics = False`，说明它是元数据库、不存歌词，中文曲库覆盖也低；**不假装能取词，也不凭空造词**。
+  - `/api/library` 与 `/api/library/search` 的 `sources` 多了 `available` / `lyrics` / `search_note` / `lyrics_note` / `note`；搜索响应还多 `source_stats`（逐源「搜到几条 / 这次有没有搜成」），前端据此置灰 chip 并写明原因——不再有「chip 亮着却搜不出东西」的源。
+
+- **概览删掉整行快捷磁贴与所有纯跳转按钮，收成 2×2 对称四卡**（只改 `web/app.js`、`web/style.css`）。
+  - 删掉顶部 4 个快捷磁贴（源文件 / 整理计划 / 任务记录 / 系统设置）——左侧导航已有入口。
+  - 删掉「打开音乐库」「查看全部」（最近入库、最近任务）、「去音乐库补全」「去源文件」「去任务记录」「去音乐库」等只做页面跳转的按钮与空态跳转；只保留有实际业务动作的按钮（如系统设置页的「运行写入自检」）。
+  - 版面只剩两行 2 等分：`库状态速览｜最近入库`、`最近任务｜最近整理`，同行等高、断点 900 落单列，不留半宽孤卡；`.dash-quick` / `.quick-tile` 等已无用样式一并删除。
+  - 实测 1440 / 1280 / 900 / 620 四档 `scrollWidth == clientWidth`、控制台 0 报错；真实曲目 `Talk like me(像我这样说) (Live) - 弹壳Danko` 在编辑器里点「填入编辑区」拿到 3295 字 LRC 正文，点「保存歌词」才写盘（行刷新 + 操作历史流水）。
+
+- **`/api/library/search` 的结果多带逐源统计**：`source_stats: [{ id, label, count, ok, note }]`，把「可用但本次 0 条」与「接口没回来」在界面上分得开。
+
 ### 修复
 
 - **概览卡片不再互相重叠**（只改 `web/app.js`、`web/style.css`、`web/index.html`）。
