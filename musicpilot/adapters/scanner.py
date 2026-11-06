@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import base64
 import os
+from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from mutagen import File as MutagenFile
 from mutagen.flac import Picture
 
+from musicpilot.domain.library import classify_kind
 from musicpilot.domain.matcher import merge_metadata, parse_filename
 from musicpilot.domain.models import AudioFile, TrackMetadata
 
@@ -21,6 +24,8 @@ _TAG_KEYS: dict[str, tuple[str, ...]] = {
     "date": ("date", "year", "TDRC", "TYER", "\xa9day"),
     "tracknumber": ("tracknumber", "track", "TRCK", "trkn"),
     "discnumber": ("discnumber", "disc", "TPOS", "disk"),
+    # 专辑类型：各家写在不同键里，含 single 就按单曲处理
+    "albumtype": ("albumtype", "releasetype", "musicbrainz_albumtype", "TMED", "stik"),
     # ID3 的歌词帧在 mutagen 里叫 ``USLT::<语言>``（如 USLT::chi），只写 "USLT" 永远取不到。
     "lyrics": ("lyrics", "unsyncedlyrics", "USLT", "\xa9lyr"),
 }
@@ -182,6 +187,8 @@ def read_tags(path: Path) -> tuple[TrackMetadata, bool, dict[str, Any]]:
     technical = {
         "duration": float(getattr(info, "length", 0) or 0) or None,
         "bitrate": int(getattr(info, "bitrate", 0) or 0) or None,
+        # 只用于判定单曲 / 专辑，不做展示，所以跟着「顺手读到的技术信息」一起回去
+        "album_type": tag("albumtype") or "",
     }
     close = getattr(audio, "close", None)
     if callable(close):
@@ -189,12 +196,18 @@ def read_tags(path: Path) -> tuple[TrackMetadata, bool, dict[str, Any]]:
     return metadata, bool(has_cover), technical
 
 
-def probe_file(path: Path, *, root: Path | None = None) -> AudioFile:
+def probe_file(
+    path: Path,
+    *,
+    root: Path | None = None,
+    sibling_audio_count: int | None = None,
+) -> AudioFile:
     stat = path.stat()
     tagged, has_cover, technical = read_tags(path)
     guessed = parse_filename(path, root=root)
     # Existing tags win; filename/directory hints only fill the blanks.
     local = merge_metadata(tagged, guessed)
+    local = with_kind(local, sibling_audio_count, technical.get("album_type"))
     return AudioFile(
         path=str(path),
         size=stat.st_size,
@@ -204,6 +217,44 @@ def probe_file(path: Path, *, root: Path | None = None) -> AudioFile:
         bitrate=technical.get("bitrate"),
         local_metadata=local,
         has_embedded_cover=has_cover,
+    )
+
+
+def with_kind(
+    meta: TrackMetadata,
+    sibling_audio_count: int | None,
+    album_type: str | None,
+) -> TrackMetadata:
+    """给本地元数据挂上 ``kind`` / ``kind_reason``；判定依据由调用方一次统计好。"""
+    kind, reason = classify_kind(
+        meta, sibling_audio_count=sibling_audio_count, album_type=album_type
+    )
+    return replace(meta, kind=kind, kind_reason=reason)
+
+
+def audio_counts(paths: Iterable[Path]) -> dict[Path, int]:
+    """一次遍历统计「每个目录里有多少音频文件」。
+
+    154 首曲目只该数一遍目录，不能每个文件都去 listdir 一次。传入的路径列表本来
+    就是 walk 出来的结果，这里只是顺手归并，不多碰一次磁盘。
+    """
+    counts: dict[Path, int] = {}
+    for path in paths:
+        parent = path.parent
+        counts[parent] = counts.get(parent, 0) + 1
+    return counts
+
+
+def audio_in_dir(directory: Path, *, extensions: frozenset[str]) -> int:
+    """单曲判定要用的「本目录音频文件数」；只为单个文件查一次，不整库遍历。"""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return 0
+    return sum(
+        1
+        for entry in entries
+        if entry.suffix.lower() in extensions and not entry.is_dir()
     )
 
 
@@ -283,10 +334,14 @@ def scan(
     paths, warnings = scan_files(
         root, extensions=extensions, exclude_dirs=exclude_dirs, max_files=max_files
     )
+    # 同目录音频数在这里算一次，后面每个文件都用同一份结果判单曲 / 专辑
+    counts = audio_counts(paths)
     files: list[AudioFile] = []
     for path in paths:
         try:
-            files.append(probe_file(path, root=root))
+            files.append(
+                probe_file(path, root=root, sibling_audio_count=counts.get(path.parent))
+            )
         except OSError as exc:
             warnings.append(f"无法读取 {path.name}：{exc}")
     return files, warnings

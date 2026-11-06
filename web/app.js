@@ -79,7 +79,7 @@ const state = {
   library: {
     // 音乐库页的视图状态都在这里：筛选 / Tab / 分页 / 视图切换，刷新扫盘不会把它清掉。
     loaded: false, loading: false, tracks: [], stats: {}, sources: [], libraryDir: '', warnings: [],
-    filter: 'all', lyricFilter: 'all', coverFilter: 'all', genre: '', query: '',
+    filter: 'all', lyricFilter: 'all', coverFilter: 'all', kindFilter: 'all', genre: '', query: '',
     tab: 'tracks', view: localStorage.getItem('mp-lib-view') || 'table',
     page: 1, pageSize: Number(localStorage.getItem('mp-lib-size')) || 50, openGroup: '',
     // 概览的短时缓存：{ at, stats, tracks, sources }，60s 内重复进概览不再请求 /api/library
@@ -363,13 +363,65 @@ function go(page) {
   banner('');
   renderPage();
 }
-function openModal(title, html) {
+/* 通用弹窗：详情窗与确认框共用 #modal。#modal 的层级高于媒体编辑器（编辑器里也要弹预览），
+ * 关闭时清空 body——既不留旧内容，也不会让上一次的按钮回调被下一次误触发。 */
+const MODAL = { pending: null };   // 当前确认框：{ settle }，同一时间只允许一个
+
+function openModal(title, html, options = {}) {
   $('modal-title').textContent = title;
   $('modal-body').innerHTML = html;
+  const dialog = $('modal').querySelector('.dialog');
+  if (dialog) dialog.classList.toggle('wide', !!options.wide);
   $('modal').classList.remove('hidden');
 }
+
 function closeModal() {
+  const pending = MODAL.pending;
+  MODAL.pending = null;
   $('modal').classList.add('hidden');
+  $('modal-body').innerHTML = '';
+  if (pending) pending.settle(false);   // ESC / 遮罩 / × 都算「取消」
+}
+
+/** 应用内确认框：全站原生对话框（confirm / alert）都已清掉，改用这一个。
+ * 支持多行文本、主/次按钮、ESC / 点遮罩 / 取消关闭、回车默认触发主按钮。
+ * 返回 Promise<boolean>：确认为 true，其余路径一律 false。 */
+function modalConfirm(options = {}) {
+  const {
+    title = '确认', body = '', hint = '', confirmLabel = '确定', cancelLabel = '取消',
+    danger = false,
+  } = options;
+  return new Promise((resolve) => {
+    // 上一个还没关就被新的顶掉：先把它按「取消」结掉，回调不会串台
+    if (MODAL.pending) {
+      const previous = MODAL.pending;
+      MODAL.pending = null;
+      previous.settle(false);
+    }
+    const entry = { settle: (value) => resolve(value) };
+    MODAL.pending = entry;
+    const done = (value) => {
+      if (MODAL.pending !== entry) return;
+      MODAL.pending = null;
+      closeModal();   // 已清 pending，closeModal 不会再回调一次
+      resolve(value);
+    };
+
+    openModal(title, `
+      <div class="confirm-body">${body}</div>
+      ${hint ? `<p class="confirm-hint">${hint}</p>` : ''}
+      <div class="modal-actions">
+        <button class="ghost-btn" type="button" data-modal-cancel>${esc(cancelLabel)}</button>
+        <button class="${danger ? 'ghost-btn danger-text' : 'primary-btn'}" type="button"
+          data-modal-confirm>${esc(confirmLabel)}</button>
+      </div>`);
+
+    const box = $('modal-body');
+    box.querySelector('[data-modal-cancel]').onclick = () => done(false);
+    box.querySelector('[data-modal-confirm]').onclick = () => done(true);
+    // 默认焦点落在主按钮：回车直接确认，不会误触键盘上的别的按钮
+    box.querySelector('[data-modal-confirm]').focus({ preventScroll: true });
+  });
 }
 
 /* ---------------- directory picker ---------------- */
@@ -579,6 +631,8 @@ function dashLibraryHtml(stats) {
   const total = Number(stats.tracks) || 0;
   const incomplete = Math.min(Number(stats.incomplete) || 0, total);
   const rate = total ? Math.round((100 * incomplete) / total) : null;
+  const singles = Number(stats.singles) || 0;
+  const albumTracks = Number(stats.album_tracks) || 0;
   const numbers = [
     ['曲目', total], ['专辑', Number(stats.albums) || 0], ['歌手', Number(stats.artists) || 0],
   ].map(([label, value]) => `
@@ -591,6 +645,10 @@ function dashLibraryHtml(stats) {
         <b>${rate === null ? '—' : `${rate}%`}</b></div>
       <div class="progress dash-rate-bar"><span class="${dashRateTone(incomplete ? rate : 100)}" style="width:${rate === null ? 0 : rate}%"></span></div>
       <div class="dash-rate-note">${total ? `${incomplete} / ${total} 首待补全` : '库里还没有曲目'}</div>
+    </div>
+    <div class="dash-kinds">
+      <span class="badge kind-single">单曲 ${esc(String(singles))}</span>
+      <span class="badge kind-album">专辑曲目 ${esc(String(albumTracks))}</span>
     </div>
     <div class="dash-foot">
       <span class="dash-pending">待补全 <b class="${incomplete ? 'warn' : 'ok'}">${esc(String(incomplete))}</b> 首</span>
@@ -641,6 +699,7 @@ const LIBRARY_FILTERS = [
 const LIBRARY_TABS = [['tracks', '歌曲'], ['artists', '歌手'], ['genres', '流派'], ['albums', '专辑']];
 const LYRIC_FILTERS = [['all', '全部歌词'], ['yes', '有歌词'], ['no', '无歌词']];
 const COVER_FILTERS = [['all', '全部封面'], ['yes', '有封面'], ['no', '无封面']];
+const KIND_FILTERS = [['all', '全部类型'], ['single', '单曲'], ['album', '专辑曲目']];
 const PAGE_SIZES = [20, 50, 100];
 const FIELD_NAMES = {
   title: '标题', artist: '歌手', album: '专辑', album_artist: '专辑艺术家',
@@ -671,6 +730,9 @@ function libraryTrackMatches(track) {
   const cover = state.library.coverFilter;
   if (cover === 'yes' && !track.has_cover) return false;
   if (cover === 'no' && track.has_cover) return false;
+  // 类型筛选与后端 kind 同源：单曲 / 专辑曲目
+  const kind = state.library.kindFilter;
+  if (kind !== 'all' && (track.kind || 'album') !== kind) return false;
   return true;
 }
 function libraryVisible() {
@@ -748,7 +810,7 @@ function libraryTable(tracks) {
       <td class="lib-col-lyrics">${track.has_lyrics
         ? '<span class="lib-flag-icon ok" title="有歌词">✓</span>'
         : '<span class="lib-flag-icon bad" title="无歌词">✕</span>'}</td>
-      <td class="lib-col-state">${trackBadge(track)}</td>
+      <td class="lib-col-state">${kindBadge(track)}${trackBadge(track)}</td>
       <td class="lib-col-actions"><div class="btn-row nowrap">
         <button class="icon-btn small" data-lib-edit="${index}" title="编辑（打开媒体编辑器）" aria-label="编辑">
           ${spriteIcon('i-edit')}</button>
@@ -763,7 +825,7 @@ function libraryTable(tracks) {
       <thead><tr>
         <th class="lib-col-track">曲目</th><th class="lib-col-album">专辑</th><th class="lib-col-artist">歌手</th>
         <th class="lib-col-genre">流派</th><th class="lib-col-format">格式</th><th class="lib-col-complete">完整度</th>
-        <th class="lib-col-lyrics">歌词</th><th class="lib-col-state">状态</th><th class="lib-col-actions">操作</th>
+        <th class="lib-col-lyrics">歌词</th><th class="lib-col-state">类型 / 状态</th><th class="lib-col-actions">操作</th>
       </tr></thead>
       <tbody>${rows || emptyCell('i-funnel', '当前筛选条件下没有曲目', 9)}</tbody></table></div>`;
 }
@@ -782,7 +844,7 @@ function libraryCard(track, index) {
       ${ringHtml(percent, completenessTone(percent / 100), 34)}
     </div>
     <div class="lib-row-foot">
-      ${trackBadge(track)}
+      ${kindBadge(track)}${trackBadge(track)}
       <span class="lib-tag mono">${esc(trackFormat(track))}</span>
       <span class="tiny">${track.has_lyrics ? '有歌词' : '无歌词'}</span>
       <span class="lib-row-actions">
@@ -993,13 +1055,15 @@ function bindLibraryActions() {
   if (lyric) lyric.onchange = () => { store.lyricFilter = lyric.value; store.page = 1; paintLibraryBody(); };
   const cover = $('lib-cover');
   if (cover) cover.onchange = () => { store.coverFilter = cover.value; store.page = 1; paintLibraryBody(); };
+  const kind = $('lib-kind');
+  if (kind) kind.onchange = () => { store.kindFilter = kind.value; store.page = 1; paintLibraryBody(); };
   const genre = $('lib-genre');
   if (genre) genre.onchange = () => { store.genre = genre.value; store.page = 1; paintLibraryBody(); };
   const filterBtn = $('lib-filter-btn');
   if (filterBtn) filterBtn.onclick = () => { const node = $('lib-search'); node?.focus(); node?.select(); };
   const reset = $('lib-reset');
   if (reset) reset.onclick = () => {
-    Object.assign(store, { query: '', filter: 'all', lyricFilter: 'all', coverFilter: 'all', genre: '', page: 1, openGroup: '' });
+    Object.assign(store, { query: '', filter: 'all', lyricFilter: 'all', coverFilter: 'all', kindFilter: 'all', genre: '', page: 1, openGroup: '' });
     if ($('lib-search')) $('lib-search').value = '';
     paintLibraryBody();
   };
@@ -1233,6 +1297,13 @@ function paintMediaSide() {
       <div class="me-side-sub">${esc([track.artist || '—', track.album || '—', track.year || '—'].join(' · '))}</div>
     </div>
     <div class="me-side-block">
+      <span class="field-label">库状态速览</span>
+      <div class="me-kind">
+        ${kindBadge(track)}
+        <span class="me-kind-reason">${esc(track.kind_reason || '未判定，按专辑曲目处理')}</span>
+      </div>
+    </div>
+    <div class="me-side-block">
       <div class="me-complete">
         ${ringHtml(percent, completenessTone(percent / 100), 54)}
         <div class="me-complete-text">
@@ -1340,7 +1411,14 @@ async function saveCorePending() {
     });
     const labels = preview.would_write_labels || [];
     if (!labels.length) { toast(preview.message || '没有可写入的字段', true); return; }
-    if (!confirm(`将写入：${labels.join('、')}\n（只补空字段，文件位置不变）\n\n确认写入？`)) return;
+    const ok = await modalConfirm({
+      title: '写入标签',
+      body: `<p>将写入：<b>${esc(labels.join('、'))}</b></p>
+        <p class="small muted">只补空字段，文件里已有的标签一个都不会被覆盖。</p>`,
+      hint: '文件位置不变：不移动、不复制、不建硬链接或软链接。',
+      confirmLabel: '确认写入',
+    });
+    if (!ok) return;
     const result = await api('/api/library/apply', {
       method: 'POST', body: { path: track.path, metadata, dry_run: false },
     });
@@ -1410,6 +1488,13 @@ function paintMediaScrape(track) {
     button.addEventListener('click', () => {
       const item = editor.scrape.results[Number(button.dataset.scrapeApply)];
       applyScrapeResult(item, button.dataset.dry === '1');
+    });
+  });
+  box.querySelectorAll('[data-scrape-preview]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const index = Number(button.dataset.scrapePreview);
+      // 直接弹窗，不发任何写请求：预览就是预览
+      openCandidatePreview(editor.scrape.results[index], index);
     });
   });
 }
@@ -2109,9 +2194,17 @@ function bindLyricsControls(box) {
     }
     if (hit.dataset.meClear !== undefined) {
       if (!lyricsDraftText(lyr).trim()) { toast('编辑区已经是空的', true); return; }
-      if (!confirm('清空编辑区里的全部歌词？\n（只清这里，不写文件；要落盘还得重新保存）')) return;
-      setLyricsDraft(box, lyr, '');
-      toast('已清空编辑区，文件没动');
+      modalConfirm({
+        title: '清空歌词',
+        body: '<p>清空编辑区里的全部歌词？</p>',
+        hint: '只清这里，不写文件；要落盘还得重新保存。',
+        confirmLabel: '清空编辑区',
+        danger: true,
+      }).then((ok) => {
+        if (!ok) return;
+        setLyricsDraft(box, lyr, '');
+        toast('已清空编辑区，文件没动');
+      });
       return;
     }
     if (hit.dataset.meLyricsSave !== undefined) { saveMediaLyrics(); return; }
@@ -2311,13 +2404,152 @@ function scrapeResultCard(item, index) {
       </div>
     </div>
     <div class="btn-row">
-      <button class="ghost-btn small" data-scrape-apply="${index}" data-dry="1">预览</button>
+      <button class="ghost-btn small" data-scrape-preview="${index}">预览</button>
       <button class="primary-btn small" data-scrape-apply="${index}" data-dry="0">写入标签</button>
     </div>
   </article>`;
 }
 
+/* ---- 候选预览：应用内完整详情窗，只看不写 ---- */
+const CANDIDATE_PLACEHOLDER = `<span class="cand-cover-fallback">${spriteIcon('i-disc')}</span>`;
+
+/** 候选封面：走 /api/cover 代理，取不到就退回统一占位图，不留破图。 */
+function candidateCover(item) {
+  const meta = item.metadata || {};
+  const url = meta.cover_url ? `/api/cover?url=${encodeURIComponent(meta.cover_url)}` : '';
+  return `<div class="cand-cover">${url
+    ? `<img src="${esc(url)}" alt="" data-cand-cover>${CANDIDATE_PLACEHOLDER}`
+    : CANDIDATE_PLACEHOLDER}</div>`;
+}
+
+/** 逐字段对照表：当前文件里的值 / 候选值 / 会不会写入。
+ * 「会不会写入」只认后端 plan_fill 的结论，已有值一律显示「不覆盖」。 */
+function candidateFieldsHtml(item) {
+  const rows = (item.fields || []).map((row) => {
+    // 四种结论：会写 / 已有值不覆盖 / 候选有值但这条路不写 / 两边都没有
+    const verdict = row.will_write
+      ? '<span class="badge ok">将写入</span>'
+      : row.keep ? '<span class="badge">不覆盖</span>'
+        : row.candidate ? `<span class="badge" title="${esc(row.note || '')}">不写入</span>`
+          : '<span class="badge">无值</span>';
+    return `<tr class="${row.will_write ? 'will-write' : ''}">
+      <th scope="row">${esc(row.label)}${row.note ? `<em class="cand-note">${esc(row.note)}</em>` : ''}</th>
+      <td>${row.current ? esc(row.current) : '<span class="lib-dash">—</span>'}</td>
+      <td>${row.candidate ? esc(row.candidate) : '<span class="lib-dash">—</span>'}</td>
+      <td>${verdict}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap cand-table-wrap"><table class="cand-table">
+    <thead><tr><th scope="col">字段</th><th scope="col">当前文件</th><th scope="col">候选</th><th scope="col">是否写入</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+/** 打开候选预览：封面大图 + 完整字段 + 对照表 + 将写入清单，预览本身绝不写盘。 */
+function openCandidatePreview(item, index) {
+  if (!item) return;
+  const meta = item.metadata || {};
+  const facts = [
+    ['歌手', meta.artist], ['专辑', meta.album], ['专辑艺术家', meta.album_artist],
+    ['年份', meta.year], ['专辑轨号', meta.track_number], ['碟号', meta.disc_number],
+  ].map(([label, value]) => `<div class="cand-fact">
+      <span>${esc(label)}</span><b>${value ? esc(value) : '<span class="lib-dash">—</span>'}</b></div>`).join('');
+  const planned = (item.would_write_labels || []);
+  const lyricsNote = item.has_lyrics
+    ? '<p class="small muted">该候选随带歌词，点「写入标签」会一并补上（文件里已有歌词时不覆盖）。</p>'
+    : '<p class="small muted">该来源没有随候选返回歌词（可用「从音源搜词」单独取词）。</p>';
+  openModal('候选详情', `
+    <div class="cand-preview">
+      ${candidateCover(item)}
+      <div class="cand-head">
+        <div class="cand-title">${esc(meta.title || '—')}</div>
+        <div class="cand-badges">
+          <span class="badge">${esc(item.source_label || sourceLabel(meta.source))}</span>
+          <span class="badge ${scoreTone(item.score)}" title="匹配度 1–10">匹配度 ${esc(String(item.score))}/10</span>
+          ${(item.fills || []).length
+            ? `<span class="badge info">可补：${esc((item.fills || []).map(fieldName).join('、'))}</span>`
+            : '<span class="badge">没有能补的字段</span>'}
+        </div>
+        <div class="cand-facts">${facts}</div>
+      </div>
+    </div>
+    <div class="cand-block">
+      <span class="field-label">逐字段对照</span>
+      ${candidateFieldsHtml(item)}
+      <p class="small muted">后端只补空字段：文件里已有值的一律「不覆盖」，预览里的结论与真正写入一致。</p>
+    </div>
+    <div class="cand-block">
+      <span class="field-label">本次将写入的字段</span>
+      ${planned.length
+        ? `<div class="confirm-chips">${planned.map((label) => `<span class="badge ok">${esc(label)}</span>`).join('')}</div>`
+        : '<p class="small muted">没有可写入的字段：这首曲目该有的都齐了。</p>'}
+      ${lyricsNote}
+    </div>
+    <div class="modal-actions">
+      <button class="ghost-btn" type="button" data-cand-close>关闭</button>
+      <button class="primary-btn" type="button" data-cand-apply ${planned.length ? '' : 'disabled'}>写入标签</button>
+    </div>`, { wide: true });
+
+  const box = $('modal-body');
+  box.querySelector('img[data-cand-cover]')?.addEventListener('error', (event) => {
+    event.currentTarget.remove();   // 破了就退回占位图，不留破图
+  }, { once: true });
+  box.querySelector('[data-cand-close]').onclick = () => closeModal();
+  const apply = box.querySelector('[data-cand-apply]');
+  if (apply) apply.onclick = () => {
+    closeModal();
+    const current = editor.scrape?.results?.[index];
+    if (current) applyScrapeResult(current, false);
+  };
+}
+
 /* ---- 批量补全 / 只补这一首：只写标签，不动文件位置 ---- */
+
+/** 单曲 / 专辑徽章：与后端 kind 一一对应，界面上说话用同一份文案。 */
+const KIND_LABELS = { single: '单曲', album: '专辑' };
+const kindLabel = (kind) => KIND_LABELS[kind] || '专辑';
+function kindBadge(track) {
+  const kind = (track && track.kind) || 'album';
+  const reason = (track && track.kind_reason) || '';
+  return `<span class="badge kind-${esc(kind)}" title="${esc(reason || '未判定')}">${esc(kindLabel(kind))}</span>`;
+}
+
+/** 批量补全弹窗里的明细行：曲名 + 缺什么（一眼看出是缺专辑轨号还是缺歌手）。 */
+function scanRowHtml(row) {
+  const missing = (row.missing_labels || []).join('、') || '—';
+  return `<li class="confirm-item">
+    ${kindBadge(row)}
+    <span class="confirm-item-main" title="${esc(row.name)}">${esc(row.title || row.name)}</span>
+    <span class="confirm-item-side">缺 ${esc(missing)}</span>
+  </li>`;
+}
+
+/** 「批量补全」确认弹窗：单曲 / 专辑曲目分开说，前 5 条明细，音源，只写标签的提示。 */
+function autoFillBody(preview, sources) {
+  const singles = preview.singles || { incomplete: 0, total: 0 };
+  const albums = preview.album_tracks || { incomplete: 0, total: 0 };
+  const rows = (preview.tracks || []).slice(0, 5).map(scanRowHtml).join('');
+  const more = (preview.incomplete || 0) - 5;
+  return `
+    <div class="confirm-summary">
+      <div class="confirm-stat">
+        <b>${esc(String(preview.incomplete))}</b><span>首曲目缺字段</span>
+      </div>
+      <div class="confirm-split">
+        <span class="badge kind-single">单曲 ${esc(String(singles.incomplete))} 首</span>
+        <span class="badge kind-album">专辑曲目 ${esc(String(albums.incomplete))} 首</span>
+      </div>
+      <p class="small muted">单曲只要求标题与歌手；专辑曲目还要求专辑、专辑艺术家、年份与专辑轨号。</p>
+    </div>
+    ${rows ? `<div class="confirm-list-wrap"><ol class="confirm-list">${rows}</ol>
+      ${more > 0 ? `<p class="small muted confirm-more">… 另有 ${esc(String(more))} 首</p>` : ''}</div>`
+      : ''}
+    <div class="confirm-sources">
+      <span class="field-label">将使用的音源</span>
+      <div class="confirm-chips">${sources.map((item) =>
+        `<span class="badge info">${esc(item.label)}</span>`).join('')}</div>
+    </div>`;
+}
+
 async function autoFillLibrary() {
   const sources = (state.library.sources || []).filter((item) => item.enabled);
   if (!sources.length) { toast('请先在「刮削设置」里启用至少一个在线音源', true); return; }
@@ -2326,14 +2558,14 @@ async function autoFillLibrary() {
     preview = await api('/api/library/scan', { method: 'POST' });
   } catch (error) { toast(error.message, true); return; }
   if (!preview.incomplete) { toast('库里的曲目字段都齐了，没什么要补的'); return; }
-  const sample = preview.tracks.slice(0, 5)
-    .map((row) => `· ${row.name}：缺 ${(row.missing_labels || []).join('、')}`).join('\n');
-  const more = preview.incomplete > 5 ? `\n… 另有 ${preview.incomplete - 5} 首` : '';
-  if (!confirm(
-    `自动扫描：${preview.incomplete} 首曲目缺字段\n${sample}${more}\n\n`
-    + `将用 ${sources.map((item) => item.label).join(' / ')} 逐首搜索并只补空字段。\n`
-    + '不会移动、复制、建硬链接或软链接任何文件。继续？'
-  )) return;
+  const ok = await modalConfirm({
+    title: '批量补全',
+    body: autoFillBody(preview, sources),
+    hint: '只写标签：不移动、不复制、不建硬链接或软链接，文件位置一律不变。',
+    cancelLabel: '取消',
+    confirmLabel: '开始补全',
+  });
+  if (!ok) return;
   toast('正在扫描并补全，请稍候…');
   try {
     const payload = await api('/api/library/fill', {
@@ -2419,7 +2651,7 @@ async function renderLibrary() {
     <div class="panel lib-panel">
       <div class="panel-head">
         <div><h2>全部曲目</h2>
-          <p class="mono small">${esc(store.libraryDir)} · 曲目 ${stats.tracks || 0} · 封面 ${stats.with_cover || 0} · 歌词 ${stats.with_lyrics || 0}${stats.incomplete ? ` · 待补全 ${stats.incomplete}` : ''}</p></div>
+          <p class="mono small">${esc(store.libraryDir)} · 曲目 ${stats.tracks || 0} · 单曲 ${stats.singles || 0} · 专辑曲目 ${stats.album_tracks || 0} · 封面 ${stats.with_cover || 0} · 歌词 ${stats.with_lyrics || 0}${stats.incomplete ? ` · 待补全 ${stats.incomplete}` : ''}</p></div>
         <div class="btn-row">
           <button class="ghost-btn" id="lib-auto">批量补全</button>
           <button class="ghost-btn" id="lib-reload">刷新</button>
@@ -2440,6 +2672,9 @@ async function renderLibrary() {
           </select>
           <select id="lib-cover" class="lib-select">
             ${COVER_FILTERS.map(([id, label]) => `<option value="${id}"${store.coverFilter === id ? ' selected' : ''}>${label}</option>`).join('')}
+          </select>
+          <select id="lib-kind" class="lib-select" aria-label="按曲目类型筛选">
+            ${KIND_FILTERS.map(([id, label]) => `<option value="${id}"${store.kindFilter === id ? ' selected' : ''}>${label}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -2532,9 +2767,14 @@ async function renderFiles() {
   $('opt-organize').addEventListener('change', (e) => { state.options.organize = e.target.checked; });
   $('opt-skip').addEventListener('change', (e) => { state.options.skipLowConfidence = e.target.checked; });
   $('preview-btn').addEventListener('click', () => createJob('preview', true));
-  $('scrape-btn').addEventListener('click', () => {
-    if (!confirm('将按当前设置写标签并把文件转移到音乐库。确认执行？')) return;
-    createJob('scrape', false);
+  $('scrape-btn').addEventListener('click', async () => {
+    const ok = await modalConfirm({
+      title: '刮削整理',
+      body: `<p>对选中的 <b>${state.selected.size}</b> 个文件写标签，并按「${esc(modeLabel(state.settings.transfer_mode))}」方式转移。</p>`,
+      hint: '与「批量补全」不同：这一步真的会移动 / 复制 / 建链接，请确认转移方式后再继续。',
+      confirmLabel: '开始刮削',
+    });
+    if (ok) createJob('scrape', false);
   });
 }
 
@@ -2811,9 +3051,14 @@ async function renderPlan() {
   if (run) run.addEventListener('click', async () => {
     const choices = buildChoices();
     const count = Object.keys(choices).length;
-    const outline = count ? `其中 ${count} 个文件按你的人工选择写入。` : '';
-    if (!confirm(`确认处理 ${items.length} 个文件？将写入标签并使用「${state.settings.transfer_mode}」方式转移。${outline}`)) return;
-    await createJob('scrape', false, items.map((item) => item.source), choices);
+    const ok = await modalConfirm({
+      title: '执行整理计划',
+      body: `<p>处理 <b>${items.length}</b> 个文件，写入标签并使用「${esc(modeLabel(state.settings.transfer_mode))}」方式转移。</p>
+        ${count ? `<p class="small muted">其中 ${count} 个文件按你的人工选择写入。</p>` : ''}`,
+      hint: '这是预览之外的真执行：会写标签、会按转移方式处理文件。',
+      confirmLabel: '执行计划',
+    });
+    if (ok) await createJob('scrape', false, items.map((item) => item.source), choices);
   });
 }
 
@@ -2939,7 +3184,15 @@ async function renderJobs() {
   }));
   document.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
     const job = (state.jobs || []).find((row) => row.id === b.dataset.del) || {};
-    if (!confirm(`删除任务记录「${jobLabel(job)}」？\n明细会一起删掉，音乐库里已经整理好的文件不受影响。`)) return;
+    const ok = await modalConfirm({
+      title: '删除任务记录',
+      body: `<p>删除任务记录「<b>${esc(jobLabel(job))}</b>」？</p>
+        <p class="small muted">明细会一起删掉。</p>`,
+      hint: '音乐库里已经整理好的文件不受影响。',
+      confirmLabel: '删除记录',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api(`/api/jobs/${b.dataset.del}`, { method: 'DELETE' });
       if (state.drawer.jobId === b.dataset.del) closeDrawer();
@@ -2949,7 +3202,14 @@ async function renderJobs() {
   }));
   const clear = $('clear-jobs');
   if (clear) clear.addEventListener('click', async () => {
-    if (!confirm('清空全部任务记录？\n明细会一起删除，正在运行的任务会保留，音乐库里的文件不受影响。')) return;
+    const ok = await modalConfirm({
+      title: '清空任务记录',
+      body: '<p>清空全部任务记录？明细会一起删除。</p>',
+      hint: '正在运行的任务会保留，音乐库里的文件不受影响。',
+      confirmLabel: '清空记录',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       const result = await api('/api/jobs', { method: 'DELETE' });
       closeDrawer();
@@ -3676,8 +3936,20 @@ $('drawer-close').addEventListener('click', closeDrawer);
 $('drawer').addEventListener('click', (event) => {
   if (event.target === $('drawer')) closeDrawer();
 });
+// 确认框里回车 = 主按钮（焦点可能被点到别处，所以不靠浏览器默认行为）
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || !MODAL.pending) return;
+  if ($('modal').classList.contains('hidden')) return;
+  const target = event.target;
+  // 多行文本框里的回车是换行，不是确认
+  if (target && target.tagName === 'TEXTAREA') return;
+  event.preventDefault();
+  $('modal-body')?.querySelector('[data-modal-confirm]')?.click();
+});
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
+  // 层级最高的是通用弹窗（确认框 / 候选预览）：它开着就只关它，不顺手连带关掉编辑器
+  if (!$('modal').classList.contains('hidden')) { closeModal(); return; }
   // 搜词面板盖在歌词 Tab 上时，ESC 先收它，再按一次才关编辑器
   if (mediaEditorOpen()) {
     if (!closeLyricsSourcePanel()) closeMediaEditor();
@@ -3685,7 +3957,6 @@ document.addEventListener('keydown', (event) => {
   }
   if (!$('drawer').classList.contains('hidden')) closeDrawer();
   else if (!$('picker').classList.contains('hidden')) closePicker();
-  else if (!$('modal').classList.contains('hidden')) closeModal();
 });
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
   if (themePreference() === 'auto') applyTheme('auto');

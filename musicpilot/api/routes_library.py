@@ -20,7 +20,7 @@ from musicpilot.api.schemas import (
     LibraryScrapeApply,
     LibrarySearchRequest,
 )
-from musicpilot.domain.library import FIELD_LABELS, match_score, missing_fields
+from musicpilot.domain.library import FIELD_LABELS, match_score, missing_fields, plan_fill
 from musicpilot.domain.models import TrackMetadata
 from musicpilot.domain.transfer import mode_label
 from musicpilot.services.library import LibraryTrack
@@ -171,15 +171,74 @@ def _candidate_payload(
         query = parse_filename(Path(track.path))
     meta = candidate.as_dict()
     meta["lyrics"] = clean_lyrics(candidate.lyrics)
+    planned = plan_fill(track.metadata, candidate)
     return {
         "score": match_score(query, candidate),
-        "fills": [name for name in missing_fields(track.metadata, has_cover=track.has_cover)
-                  if getattr(candidate, name, None)],
+        # 「可补」= 这次真的会写进去的字段，与下面的将写入清单同源，不虚报封面 / 歌词
+        "fills": list(planned),
         "metadata": meta,
         "source_label": SOURCE_LABELS.get(candidate.source, candidate.source),
         # 候选自带歌词就能直接填；没带但是支持按 id 取词的，前端可以点「尝试取词」
         "can_fetch_lyrics": bool(can_fetch_lyrics),
+        # 预览窗的逐字段对照 + 将写入清单：与真正写入走同一个 plan_fill，说写才写
+        "fields": _candidate_fields(track, candidate),
+        "would_write": list(planned),
+        "would_write_labels": [FIELD_LABELS.get(name, name) for name in planned],
+        # 候选有没有随带歌词：没带就明说，别让用户以为「点了写入就一定有词」
+        "has_lyrics": bool((candidate.lyrics or "").strip()),
     }
+
+
+# 预览窗的对照表字段顺序：元数据在前，封面歌词垫底
+_COMPARE_FIELDS = (
+    ("title", "标题"),
+    ("artist", "歌手"),
+    ("album", "专辑"),
+    ("album_artist", "专辑艺术家"),
+    ("year", "年份"),
+    ("track_number", "专辑轨号"),
+    ("disc_number", "碟号"),
+    ("cover", "封面"),
+    ("lyrics", "歌词"),
+)
+
+
+def _candidate_fields(track: LibraryTrack, candidate: TrackMetadata) -> list[dict[str, Any]]:
+    """逐字段对照：当前文件里的值 / 候选值 / 会不会写入。
+
+    「会不会写入」一律以 ``plan_fill`` 为准：已有值就是不覆盖，空着才写。
+    """
+    planned = plan_fill(track.metadata, candidate)
+    rows: list[dict[str, Any]] = []
+    for key, label in _COMPARE_FIELDS:
+        note = ""
+        if key == "cover":
+            current = "有封面" if track.has_cover else ""
+            proposed = "有封面" if candidate.cover_url else ""
+            # 库补全这条路只写标签文本，不内嵌封面：别让界面上写着「会写入封面」却不落盘
+            will_write = False
+            note = "补全只写标签文本，不内嵌封面"
+        elif key == "lyrics":
+            current = "有歌词" if (track.metadata.lyrics or "").strip() else ""
+            proposed = "有歌词" if (candidate.lyrics or "").strip() else ""
+            will_write = "lyrics" in planned
+        else:
+            current = getattr(track.metadata, key, None)
+            proposed = getattr(candidate, key, None)
+            will_write = key in planned
+        rows.append(
+            {
+                "key": key,
+                "label": label,
+                "current": "" if current in (None, "") else str(current),
+                "candidate": "" if proposed in (None, "") else str(proposed),
+                "will_write": will_write,
+                # 文件里已有值 → 后端只补空字段，界面写「不覆盖」而不是「会覆盖」
+                "keep": bool(current) and not will_write,
+                "note": note,
+            }
+        )
+    return rows
 
 
 @router.post("/search")
@@ -400,26 +459,41 @@ async def library_lyrics(
 
 @router.post("/scan")
 async def library_scan(context: AppContext = Depends(get_context)) -> dict[str, Any]:
-    """查漏补缺的预览：只报告缺什么，不写任何东西。"""
+    """查漏补缺的预览：只报告缺什么，不写任何东西。
+
+    单曲与专辑曲目分开统计：单曲本来就没有专辑与专辑轨号，混在一起数，整屏都是
+    「缺 专辑轨号」，看不出到底哪几首真的缺东西。
+    """
     runtime = context.settings.get()
     listing = await asyncio.to_thread(context.library.list_tracks, runtime)
     incomplete = [item for item in listing["tracks"] if item["missing"]]
+    singles = [item for item in incomplete if item["kind"] == "single"]
+    album_tracks = [item for item in incomplete if item["kind"] != "single"]
+
+    def row(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "path": item["path"],
+            "name": item["name"],
+            "title": item["title"],
+            "artist": item["artist"],
+            "album": item["album"],
+            "kind": item["kind"],
+            "kind_reason": item["kind_reason"],
+            "missing": item["missing"],
+            "missing_labels": [FIELD_LABELS.get(name, name) for name in item["missing"]],
+        }
+
     return {
         "library_dir": listing["library_dir"],
         "total": listing["total"],
         "incomplete": len(incomplete),
-        "tracks": [
-            {
-                "path": item["path"],
-                "name": item["name"],
-                "title": item["title"],
-                "artist": item["artist"],
-                "album": item["album"],
-                "missing": item["missing"],
-                "missing_labels": [FIELD_LABELS.get(name, name) for name in item["missing"]],
-            }
-            for item in incomplete
-        ],
+        # 单曲 / 专辑曲目各缺几首，前端据此分成两句话说
+        "singles": {"incomplete": len(singles), "total": listing["stats"].get("singles", 0)},
+        "album_tracks": {
+            "incomplete": len(album_tracks),
+            "total": listing["stats"].get("album_tracks", 0),
+        },
+        "tracks": [row(item) for item in incomplete],
         "warnings": listing["warnings"],
     }
 

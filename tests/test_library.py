@@ -180,10 +180,14 @@ def test_library_lyrics_preview_is_truncated(
 def test_library_detail_lists_missing_fields_and_sources(
     client: TestClient, workspace: dict[str, Any]
 ) -> None:
+    # 独占一个目录、又没有专辑标签 → 单曲：只要求标题与歌手，不要求专辑 / 轨号
     make_mp3(workspace["library"] / "bare.mp3", {"title": "只有标题"})
     track = client.get("/api/library").json()["tracks"][0]
     detail = client.get("/api/library/detail", params={"path": track["path"]}).json()
-    assert "album" in detail["missing"]
+    assert detail["kind"] == "single"
+    assert detail["kind_reason"] == "目录内仅此 1 个音频文件"
+    assert "artist" in detail["missing"]
+    assert "album" not in detail["missing"]
     assert detail["metadata"]["title"] == "只有标题"
     assert {item["id"] for item in detail["sources"]} == {
         "musicbrainz", "netease", "qq", "kugou", "kuwo"
@@ -214,7 +218,11 @@ def test_library_cover_route_serves_embedded_art(
 def test_manual_scrape_search_shows_scores_one_to_ten(
     client: TestClient, workspace: dict[str, Any]
 ) -> None:
-    path = make_mp3(workspace["library"] / "q" / "01 - 晴天.mp3", {"title": "晴天", "artist": "周杰伦"})
+    path = make_mp3(workspace["library"] / "q" / "01 - 晴天.mp3", {
+        "title": "晴天", "artist": "周杰伦", "album": "叶惠美",
+    })
+    # 同目录多一首 → 专辑曲目，专辑艺术家 / 轨号 / 年份都算「该有」，候选能补的才有的可补
+    make_mp3(workspace["library"] / "q" / "02 - 稻香.mp3", {"title": "稻香", "artist": "周杰伦"})
     context = _client_context(client)
     provider = FakeProvider([
         TrackMetadata(title="晴天", artist="周杰伦", album="叶惠美", album_artist="周杰伦",
@@ -234,7 +242,7 @@ def test_manual_scrape_search_shows_scores_one_to_ten(
     assert scores == sorted(scores, reverse=True)
     best = payload["results"][0]
     assert best["source_label"] == "网易云"
-    assert "album" in best["fills"]
+    assert {"album_artist", "track_number"} <= set(best["fills"])
 
 
 def test_manual_scrape_respects_the_chosen_platform(
@@ -350,13 +358,16 @@ def test_scan_reports_incomplete_tracks_without_writing(
         "title": "齐全", "artist": "歌手", "album": "专辑",
         "album_artist": "专辑歌手", "year": 2000, "track_number": 1,
     })
-    make_mp3(workspace["library"] / "half.mp3", {"title": "缺一半", "artist": "歌手"})
+    # 同目录两首 + 有专辑标签 → 专辑曲目，六项照旧
+    make_mp3(workspace["library"] / "half.mp3", {"title": "缺一半", "artist": "歌手", "album": "专辑"})
     before = _snapshot(workspace["library"])
 
     payload = client.post("/api/library/scan").json()
     half = next(row for row in payload["tracks"] if row["name"] == "half.mp3")
-    assert {"album", "album_artist", "track_number"} <= set(half["missing"])
+    assert {"album_artist", "year", "track_number"} <= set(half["missing"])
+    assert "album" not in half["missing"], "专辑已经写了，不该再算缺"
     assert half["missing_labels"]
+    assert half["kind"] == "album"
     # full.mp3 字段齐全，只是没有内嵌封面，所以也会被列出来
     full = next(row for row in payload["tracks"] if row["name"] == "full.mp3")
     assert full["missing"] == ["cover"]

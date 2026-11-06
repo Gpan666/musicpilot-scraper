@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from musicpilot.adapters.scanner import read_tags, scan_files
+from musicpilot.adapters.scanner import audio_counts, audio_in_dir, read_tags, scan_files, with_kind
 from musicpilot.adapters.tags import write_missing_tags
 from musicpilot.config import RuntimeSettings, Settings
-from musicpilot.domain.library import fill_from, match_score, missing_fields
+from musicpilot.domain.library import match_score, missing_fields, plan_fill
 from musicpilot.domain.models import TrackMetadata
 
 # 标签预览里最多带多少字歌词；全文走详情接口。
@@ -40,6 +40,9 @@ class LibraryTrack:
     has_cover: bool
     duration: float | None
     missing: list[str] = field(default_factory=list)
+    # 单曲 / 专辑曲目，与 metadata.kind 一致；单独放一份，前端不用再往里钻
+    kind: str = "album"
+    kind_reason: str = ""
 
     def as_dict(self, *, lyrics_preview: int = LYRICS_PREVIEW_CHARS) -> dict[str, Any]:
         meta = self.metadata
@@ -66,6 +69,8 @@ class LibraryTrack:
             "lyrics_preview": _preview(lyrics, lyrics_preview),
             "missing": list(self.missing),
             "complete": not self.missing,
+            "kind": self.kind,
+            "kind_reason": self.kind_reason,
         }
 
     def detail(self) -> dict[str, Any]:
@@ -86,8 +91,27 @@ def _q(value: str) -> str:
     return quote(value, safe="")
 
 
-def read_track(path: Path, *, root: Path) -> LibraryTrack:
+# 没拿到配置时的兜底音频后缀：只用来数「同目录有几首」，不做别的判断
+_FALLBACK_AUDIO_EXTENSIONS = frozenset(
+    {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif",
+     ".dsf", ".dff", ".wma", ".ape"}
+)
+
+
+def read_track(
+    path: Path,
+    *,
+    root: Path,
+    extensions: frozenset[str] | None = None,
+    sibling_audio_count: int | None = None,
+) -> LibraryTrack:
     meta, has_cover, technical = read_tags(path)
+    # 没给同目录音频数就只数这一个目录（单首重读用，不整库遍历）
+    if sibling_audio_count is None:
+        sibling_audio_count = audio_in_dir(
+            path.parent, extensions=extensions or _FALLBACK_AUDIO_EXTENSIONS
+        )
+    meta = with_kind(meta, sibling_audio_count, technical.get("album_type"))
     stat = path.stat()
     try:
         relative = path.parent.resolve().relative_to(root.resolve())
@@ -106,6 +130,8 @@ def read_track(path: Path, *, root: Path) -> LibraryTrack:
         has_cover=has_cover,
         duration=technical.get("duration"),
         missing=missing_fields(meta, has_cover=has_cover),
+        kind=meta.kind or "album",
+        kind_reason=meta.kind_reason,
     )
 
 
@@ -156,10 +182,19 @@ class LibraryService:
 
     def list_tracks(self, runtime: RuntimeSettings) -> dict[str, Any]:
         paths, warnings = self.enumerate_paths(runtime)
+        # 同目录音频数只统计一次：单曲判定靠它，不能每首曲目都去 listdir 一遍
+        counts = audio_counts(paths)
         tracks: list[LibraryTrack] = []
         for path in paths:
             try:
-                tracks.append(read_track(path, root=runtime.library_root))
+                tracks.append(
+                    read_track(
+                        path,
+                        root=runtime.library_root,
+                        extensions=self.base.extensions,
+                        sibling_audio_count=counts.get(path.parent),
+                    )
+                )
             except OSError as exc:
                 warnings.append(f"无法读取 {path.name}：{exc}")
         tracks.sort(key=lambda item: (item.relative_dir.lower(), item.name.lower()))
@@ -175,7 +210,8 @@ class LibraryService:
 
     def find(self, path: str, runtime: RuntimeSettings) -> LibraryTrack:
         target = self.resolve(path, runtime)
-        return read_track(target, root=runtime.library_root)
+        # 单首：只数它所在的那一个目录，不重扫整库
+        return read_track(target, root=runtime.library_root, extensions=self.base.extensions)
 
     def resolve(self, path: str, runtime: RuntimeSettings) -> Path:
         """只接受音乐库目录内的真实文件，越界一律拒绝。"""
@@ -199,23 +235,8 @@ class LibraryService:
 
         绝不移动/复制/链接文件：只调用 ``write_missing_tags``，路径原样保留。
         """
-        merged = fill_from(track.metadata, remote, with_lyrics=with_lyrics)
-        wanted: dict[str, Any] = {}
-        for name in (
-            "title",
-            "artist",
-            "album",
-            "album_artist",
-            "year",
-            "track_number",
-            "disc_number",
-        ):
-            before, after = getattr(track.metadata, name), getattr(merged, name)
-            if after and after != before:
-                wanted[name] = after
-        lyrics_added = bool(with_lyrics and not (track.metadata.lyrics or "").strip() and merged.lyrics)
-        if lyrics_added and merged.lyrics:
-            wanted["lyrics"] = merged.lyrics
+        # 与界面预览同一个入口：预览说会写什么，这里就写什么
+        wanted = plan_fill(track.metadata, remote, with_lyrics=with_lyrics)
         planned = list(wanted)
         if not wanted:
             return {"path": track.path, "written": [], "skipped": "no_gap", "moved": False}
@@ -327,6 +348,7 @@ class LibraryService:
 def _stats(tracks: list[LibraryTrack]) -> dict[str, Any]:
     artists = {t.metadata.artist for t in tracks if t.metadata.artist}
     albums = {(t.metadata.album, t.metadata.album_artist) for t in tracks if t.metadata.album}
+    singles = sum(1 for t in tracks if t.kind == "single")
     return {
         "tracks": len(tracks),
         "artists": len(artists),
@@ -334,4 +356,7 @@ def _stats(tracks: list[LibraryTrack]) -> dict[str, Any]:
         "with_cover": sum(1 for t in tracks if t.has_cover),
         "with_lyrics": sum(1 for t in tracks if (t.metadata.lyrics or "").strip()),
         "incomplete": sum(1 for t in tracks if t.missing),
+        # 单曲 / 专辑曲目分开计数：界面上说的是「单曲 N / 专辑曲目 M」，不是一句话糊过去
+        "singles": singles,
+        "album_tracks": len(tracks) - singles,
     }

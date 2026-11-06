@@ -30,6 +30,20 @@ class ItemStatus(StrEnum):
     NEEDS_REVIEW = "needs_review"
 
 
+class TrackKind(StrEnum):
+    """曲目类型：单曲独占一个目录，专辑曲目一个目录多首。"""
+
+    SINGLE = "single"
+    ALBUM = "album"
+
+
+# 单曲本来就没有专辑与专辑轨号，只要求标题与歌手（封面、歌词另算）。
+SINGLE_REQUIRED_FIELDS = ("title", "artist")
+# 专辑曲目维持原有六项：专辑艺术家也是「该有」的字段，默认模板按 {album_artist}
+# 建目录，缺了它就得回落到歌手，专辑合辑会被拆散。
+ALBUM_REQUIRED_FIELDS = ("title", "artist", "album", "album_artist", "year", "track_number")
+
+
 @dataclass(frozen=True, slots=True)
 class TrackMetadata:
     """The best-known metadata for a single track."""
@@ -45,15 +59,19 @@ class TrackMetadata:
     cover_url: str | None = None
     source: str = "local"
     external_id: str = ""
+    # 只有本地曲目会判定类型；在线候选留空，按「专辑曲目」处理（保守：宁可多补也不漏补）
+    kind: str = ""
+    kind_reason: str = ""
+
+    @property
+    def is_single(self) -> bool:
+        return self.kind == TrackKind.SINGLE
+
+    def required_fields(self) -> tuple[str, ...]:
+        return SINGLE_REQUIRED_FIELDS if self.is_single else ALBUM_REQUIRED_FIELDS
 
     def missing_fields(self) -> tuple[str, ...]:
-        # 专辑艺术家也算「该有」的字段：默认模板按 {album_artist} 建目录，
-        # 缺了它就得回落到歌手，专辑合辑会被拆散。
-        missing = []
-        for name in ("title", "artist", "album", "album_artist", "year", "track_number"):
-            if not getattr(self, name):
-                missing.append(name)
-        return tuple(missing)
+        return tuple(name for name in self.required_fields() if not getattr(self, name))
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from musicpilot.adapters.metadata.service import MetadataService
-from musicpilot.adapters.scanner import probe_file, scan_files
+from musicpilot.adapters.scanner import audio_counts, probe_file, scan_files
 from musicpilot.adapters.store import Store
 from musicpilot.adapters.tags import apply_tags
 from musicpilot.config import RuntimeSettings, Settings
@@ -153,11 +153,19 @@ class ScraperService:
 
         paths, scan_warnings = self._collect_paths(runtime, request.paths)
         warnings.extend(scan_warnings)
+        # 同目录音频数只统计一次：单曲判定（目录内仅 1 个音频）靠它，
+        # 不能为每个文件都去 listdir 一遍。
+        counts = audio_counts(paths)
+
         def probe_batch() -> list[Any]:
             collected: list[Any] = []
             for path in paths:
                 try:
-                    collected.append(probe_file(path, root=source_root))
+                    collected.append(
+                        probe_file(
+                            path, root=source_root, sibling_audio_count=counts.get(path.parent)
+                        )
+                    )
                 except OSError as exc:
                     warnings.append(f"跳过无法读取的文件 {path.name}：{exc}")
             return collected
