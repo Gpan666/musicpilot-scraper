@@ -140,18 +140,41 @@ $:
               exit 1
             fi
 
-            # 已存在就 PATCH 更新，不存在才 POST 创建，重跑不会报 422
-            CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
-              -H "${AUTH}" -H "X-GitHub-Api-Version: ${API_VERSION}" \
-              "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" || true)
+            # 已存在就 PATCH 更新，不存在才 POST 创建，重跑不会报 422。
+            # 注意：更新 Release 只有 PATCH /releases/{release_id}，
+            # /releases/tags/{tag} 仅支持 GET（对它发 PATCH 必回 404），
+            # 所以先按 tag 查出 id，再用 id 拼更新地址。
+            LOOKUP="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+            RELEASE_JSON=$(curl -sS -w '\n%{http_code}' \
+              -H "${AUTH}" -H "X-GitHub-Api-Version: ${API_VERSION}" "${LOOKUP}" || true)
+            CODE=$(printf '%s' "${RELEASE_JSON}" | tail -n1)
+            RELEASE_BODY=$(printf '%s' "${RELEASE_JSON}" | sed '$d')
+
             if [ "${CODE}" = "200" ]; then
-              echo "GitHub Release ${TAG} 已存在，更新说明"
+              # 取 release id：jq 优先，没有就用 python3 / python 解析
+              if command -v jq >/dev/null 2>&1; then
+                RELEASE_ID=$(printf '%s' "${RELEASE_BODY}" | jq -r '.id // empty')
+              elif command -v python3 >/dev/null 2>&1; then
+                RELEASE_ID=$(printf '%s' "${RELEASE_BODY}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')
+              else
+                RELEASE_ID=$(printf '%s' "${RELEASE_BODY}" | python -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')
+              fi
+              if [ -z "${RELEASE_ID}" ]; then
+                echo "ERROR: 查到 ${TAG} 的 Release 但没有 id，无法更新" >&2
+                exit 1
+              fi
+              echo "GitHub Release ${TAG} 已存在（id=${RELEASE_ID}），更新说明"
               METHOD=PATCH
-              URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
-            else
-              echo "创建 GitHub Release ${TAG}"
+              URL="https://api.github.com/repos/${REPO}/releases/${RELEASE_ID}"
+            elif [ "${CODE}" = "404" ]; then
+              echo "GitHub Release ${TAG} 不存在，创建"
               METHOD=POST
               URL="https://api.github.com/repos/${REPO}/releases"
+            else
+              # 401/403（token 失效或权限不足）、5xx 都不该被当成「不存在」去创建
+              echo "ERROR: 查询 GitHub Release ${TAG} 失败，HTTP ${CODE}" >&2
+              printf '%s\n' "${RELEASE_BODY}" | head -n 20 >&2
+              exit 1
             fi
             curl -sS -f -X "${METHOD}" \
               -H "${AUTH}" -H "Accept: application/vnd.github+json" \
