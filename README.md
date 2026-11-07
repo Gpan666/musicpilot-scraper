@@ -2,10 +2,6 @@
   <img src="docs/assets/musicpilot-icon.png" alt="MusicPilot Scraper" width="420">
 </p>
 
-<p align="center">
-  <img src="docs/assets/musicpilot-app-icon-192.png" alt="MusicPilot Scraper 图标" width="96">
-</p>
-
 # MusicPilot Scraper
 
 **把一堆音频文件刮削成整齐的音乐库。**
