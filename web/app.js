@@ -267,7 +267,7 @@ function toggleTheme() {
 function setAuthMode(mode) {
   state.authMode = mode;
   const registering = mode === 'register';
-  $('auth-heading').textContent = registering ? '创建管理员账号' : '登录 MusicPilot';
+  $('auth-heading').textContent = registering ? '创建管理员账号' : '登录 MusicPilot Scraper';
   $('auth-desc').textContent = registering
     ? '首次使用，请先设置一个账号。密码会用 PBKDF2 加盐保存在本机数据库中。'
     : '欢迎回来，请输入账号与密码继续使用。';

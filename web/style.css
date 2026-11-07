@@ -175,11 +175,13 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 .brand-mark { width: 40px; height: 40px; flex: none; }
 .brand-text { min-width: 0; }
 .brand-title {
-  font-size: var(--fs-headline);
+  font-size: clamp(15px, 0.35vw + 13.5px, 16px);
   font-weight: var(--wght-display);
   font-variation-settings: 'wght' var(--wght-display);
-  letter-spacing: .2px;
+  letter-spacing: 0;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .brand-sub { font-size: var(--fs-footnote); color: var(--text-3); white-space: nowrap; }
 #nav-toggle { flex: none; }
