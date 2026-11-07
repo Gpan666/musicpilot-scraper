@@ -29,6 +29,9 @@ $:
         - name: 校验版本号并生成说明
           script: |
             set -e
+            # 统一本作业 git 身份（与 GitHub noreply 邮箱一致）
+            git config --global user.email "41224727+Gpan666@users.noreply.github.com"
+            git config --global user.name "Gpan666"
             TAG="${CNB_BRANCH}"
             VERSION="${TAG#v}"
 

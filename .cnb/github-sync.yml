@@ -40,16 +40,40 @@ main:
               exit 1
             fi
 
-        - name: sync to github after PR merged
-          image: tencentcom/git-sync
-          settings:
-            # 👇 这里必须用内置变量 ${CNB_REPO_NAME}，或者直接写死仓库名
-            target_url: https://github.com/${GITHUB_USERNAME}/${CNB_REPO_NAME}.git
-            auth_type: https
-            username: ${GITHUB_USERNAME}
-            password: ${GITHUB_ACCESS_TOKEN}
-            branch: ${CNB_DEFAULT_BRANCH}
-            force: true
+        # 同步到 GitHub：推送前把作者/提交者邮箱统一改写为 GitHub noreply 邮箱，
+        # 这样 GitHub 上的提交会正确归属 Gpan666，且不暴露真实邮箱。
+        - name: sync to github after PR merged（统一 noreply 邮箱）
+          script: |
+            set -e
+            EMAIL="41224727+Gpan666@users.noreply.github.com"
+            NAME="Gpan666"
+            REPO_URL="https://${GITHUB_USERNAME}:${GITHUB_ACCESS_TOKEN}@github.com/${GITHUB_USERNAME}/${CNB_REPO_NAME}.git"
+
+            # 1) 配置本作业 git 身份（与 GitHub 账号对应）
+            git config --global user.email "$EMAIL"
+            git config --global user.name "$NAME"
+
+            # 2) 补全历史：浅克隆时 filter-branch 需要完整历史，失败忽略
+            git fetch --unshallow 2>/dev/null || true
+
+            # 3) 若当前是分离 HEAD（部分 CI 会这样），先建一个分支名供改写
+            if [ "$(git rev-parse --abbrev-ref HEAD)" = "HEAD" ]; then
+              git branch "${CNB_DEFAULT_BRANCH}" HEAD
+            fi
+
+            # 4) 改写本仓库全部提交的作者/提交者邮箱
+            git filter-branch -f --env-filter '
+              export GIT_AUTHOR_EMAIL="41224727+Gpan666@users.noreply.github.com"
+              export GIT_AUTHOR_NAME="Gpan666"
+              export GIT_COMMITTER_EMAIL="41224727+Gpan666@users.noreply.github.com"
+              export GIT_COMMITTER_NAME="Gpan666"
+            ' -- --all
+
+            # 5) 强制推送到 GitHub（改写后提交 SHA 已变，必须 force）
+            git remote remove github 2>/dev/null || true
+            git remote add github "$REPO_URL"
+            git push --force github "refs/heads/${CNB_DEFAULT_BRANCH}:refs/heads/${CNB_DEFAULT_BRANCH}"
+            echo "已同步到 GitHub，提交邮箱统一为 ${EMAIL}"
         # 仓库简介同步：GitHub 的 About 不在 git 里，整分支强推带不过去，
         # 所以每次同步都单写一次 description。只动这一个字段，失败不阻断
         # （allowFailure + 脚本内兜底 exit 0），不影响上面的 git 同步与 tag 的 Release 同步。
