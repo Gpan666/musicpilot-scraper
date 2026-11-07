@@ -172,7 +172,7 @@ code, .mono { font-family: var(--mono); font-size: .94em; }
 }
 .sidebar-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 20px; }
 .brand { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 0 4px; }
-.brand-mark { width: 40px; height: 40px; border-radius: 13px; flex: none; }
+.brand-mark { width: 40px; height: 40px; flex: none; }
 .brand-text { min-width: 0; }
 .brand-title {
   font-size: var(--fs-headline);
@@ -1043,7 +1043,7 @@ td.empty .empty-text { display: inline; }
   animation: rise 320ms cubic-bezier(.2, .8, .2, 1) both;
 }
 .auth-brand { display: flex; align-items: center; gap: 13px; margin-bottom: 26px; }
-.auth-logo { width: 46px; height: 46px; border-radius: 15px; }
+.auth-logo { width: 46px; height: 46px; }
 .auth-title {
   font-size: var(--fs-headline);
   font-weight: var(--wght-display);
