@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/musicpilot-icon.png" alt="MusicPilot Scraper" width="420">
+  <img src="docs/assets/musicpilot-scraper.png" alt="MusicPilot Scraper" width="420">
 </p>
 
 # MusicPilot Scraper
