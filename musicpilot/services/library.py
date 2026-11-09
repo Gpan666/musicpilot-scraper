@@ -3,7 +3,7 @@
 三条硬规矩，写在代码里也写在界面上：
 
 * 列表**每次**都直接遍历音乐库目录，不读数据库快照——库里有什么就显示什么。
-* 补全只写标签，**不移动、不复制、不建硬链接/软链接**。路径与链接关系一律不改。
+* 补全只写标签与封面，**不移动、不复制、不建硬链接/软链接**。路径与链接关系一律不改。
 * 只补空字段，文件里已有的标签一个都不覆盖。
 """
 
@@ -20,6 +20,8 @@ from musicpilot.adapters.tags import write_missing_tags
 from musicpilot.config import RuntimeSettings, Settings
 from musicpilot.domain.library import match_score, missing_fields, plan_fill
 from musicpilot.domain.models import TrackMetadata
+from musicpilot.domain.sorting import normalize as sort_normalize
+from musicpilot.domain.sorting import sort_payload, sort_tracks
 
 # 标签预览里最多带多少字歌词；全文走详情接口。
 LYRICS_PREVIEW_CHARS = 120
@@ -43,6 +45,10 @@ class LibraryTrack:
     # 单曲 / 专辑曲目，与 metadata.kind 一致；单独放一份，前端不用再往里钻
     kind: str = "album"
     kind_reason: str = ""
+    # 添加时间 = 文件在这块盘上的创建时间（btime）；文件系统不给（老内核 ext4、
+    # 部分网络盘）就退回，来源写在 created_source 里，不编一个看起来很像的时间。
+    created_at: float = 0.0
+    created_source: str = "ctime"
 
     def as_dict(self, *, lyrics_preview: int = LYRICS_PREVIEW_CHARS) -> dict[str, Any]:
         meta = self.metadata
@@ -54,6 +60,8 @@ class LibraryTrack:
             "extension": self.extension,
             "size": self.size,
             "modified_at": self.modified_at,
+            "created_at": self.created_at,
+            "created_source": self.created_source,
             "is_symlink": self.is_symlink,
             "duration": self.duration,
             "has_cover": self.has_cover,
@@ -78,6 +86,22 @@ class LibraryTrack:
         payload["lyrics"] = self.metadata.lyrics or ""
         payload["metadata"] = self.metadata.as_dict()
         return payload
+
+
+def _created_at(stat: Any) -> tuple[float, str]:
+    """文件的「添加时间」。
+
+    优先用 ``st_birthtime``（BSD / macOS），Linux 走 ``st_ctime``——Python 3.12+
+    的 ``st_ctime`` 在有 btime 的文件系统上就是创建时间。拿不到可信创建时间时退回
+    ``st_mtime``，并把来源标出来，界面上看到的是实话。
+    """
+    birth = getattr(stat, "st_birthtime", None)
+    if isinstance(birth, (int, float)) and birth > 0:
+        return float(birth), "birthtime"
+    ctime = getattr(stat, "st_ctime", None)
+    if isinstance(ctime, (int, float)) and ctime > 0:
+        return float(ctime), "ctime"
+    return float(getattr(stat, "st_mtime", 0) or 0), "mtime"
 
 
 def _preview(text: str, limit: int) -> str:
@@ -113,6 +137,7 @@ def read_track(
         )
     meta = with_kind(meta, sibling_audio_count, technical.get("album_type"))
     stat = path.stat()
+    created_at, created_source = _created_at(stat)
     try:
         relative = path.parent.resolve().relative_to(root.resolve())
         relative_dir = "" if str(relative) == "." else str(relative)
@@ -126,6 +151,8 @@ def read_track(
         size=stat.st_size,
         modified_at=stat.st_mtime,
         is_symlink=path.is_symlink(),
+        created_at=created_at,
+        created_source=created_source,
         metadata=meta,
         has_cover=has_cover,
         duration=technical.get("duration"),
@@ -180,7 +207,17 @@ class LibraryService:
             unique.setdefault(key, path)
         return sorted(unique.values(), key=lambda item: str(item).lower()), warnings
 
-    def list_tracks(self, runtime: RuntimeSettings) -> dict[str, Any]:
+    def list_tracks(
+        self,
+        runtime: RuntimeSettings,
+        *,
+        sort: str | None = None,
+        direction: str | None = None,
+    ) -> dict[str, Any]:
+        """枚举整库并排序。
+
+        排序只改「怎么摆」，不改「有什么」：统计卡、待补全判定都按全集算，不受影响。
+        """
         paths, warnings = self.enumerate_paths(runtime)
         # 同目录音频数只统计一次：单曲判定靠它，不能每首曲目都去 listdir 一遍
         counts = audio_counts(paths)
@@ -197,10 +234,16 @@ class LibraryService:
                 )
             except OSError as exc:
                 warnings.append(f"无法读取 {path.name}：{exc}")
+        # 默认顺序就是「目录 + 文件名」；传了维度就走统一的排序规则
         tracks.sort(key=lambda item: (item.relative_dir.lower(), item.name.lower()))
-        items = [track.as_dict() for track in tracks[:LIST_LIMIT]]
+        key, way = sort_normalize(sort, direction)
+        ordered = sort_tracks(tracks, key, way)
+        items = [track.as_dict() for track in ordered[:LIST_LIMIT]]
         return {
             "library_dir": str(runtime.library_root),
+            "sort": key,
+            "direction": way,
+            "sort_fields": sort_payload(),
             "total": len(tracks),
             "truncated": len(tracks) > LIST_LIMIT,
             "warnings": warnings,
@@ -230,10 +273,15 @@ class LibraryService:
         runtime: RuntimeSettings,
         with_lyrics: bool = True,
         write: bool = True,
+        cover_fetcher: Any = None,
     ) -> dict[str, Any]:
         """把 ``remote`` 里有的、文件里缺的字段写进标签，返回写入结果。
 
         绝不移动/复制/链接文件：只调用 ``write_missing_tags``，路径原样保留。
+
+        ``cover_fetcher`` 是异步函数 ``(url) -> (bytes, mime) | None``，用来把候选的
+        封面真图拉回来内嵌。传了它、且这次计划里确实有 ``cover``，才会去下载；
+        下载失败就当没这个字段，绝不为了「看起来成功」写一张空图。
         """
         # 与界面预览同一个入口：预览说会写什么，这里就写什么
         wanted = plan_fill(track.metadata, remote, with_lyrics=with_lyrics)
@@ -251,14 +299,27 @@ class LibraryService:
             }
         if not runtime.write_tags:
             return {"path": track.path, "written": [], "skipped": "write_disabled", "moved": False}
+        cover: tuple[bytes, str] | None = None
+        cover_reason = ""
+        if "cover" in wanted and cover_fetcher is not None:
+            try:
+                cover = await cover_fetcher(str(wanted.get("cover") or ""))
+            except Exception:  # noqa: BLE001 - 封面拿不到不影响其它字段
+                cover = None
+            if cover is None:
+                cover_reason = "封面下载失败，已跳过封面"
+        tags = {key: value for key, value in wanted.items() if key != "cover"}
         written = await write_missing_tags(
-            Path(track.path), wanted, write_lyrics=bool(wanted.get("lyrics"))
+            Path(track.path), tags, write_lyrics=bool(wanted.get("lyrics")), cover=cover
         )
+        if cover is not None and "cover" not in written and "cover" in planned:
+            cover_reason = cover_reason or "文件里已有封面，未覆盖"
         return {
             "path": track.path,
             "written": written,
             "would_write": planned,
             "skipped": "" if written else "write_failed",
+            "cover_reason": cover_reason,
             "moved": False,
             "target": track.path,
         }
@@ -272,6 +333,7 @@ class LibraryService:
         limit: int | None = None,
         with_lyrics: bool = True,
         dry_run: bool = False,
+        cover_fetcher: Any = None,
     ) -> list[dict[str, Any]]:
         """扫描整库，把「缺字段」的曲目逐个补全。
 
@@ -305,6 +367,7 @@ class LibraryService:
                     runtime=runtime,
                     with_lyrics=with_lyrics,
                     write=not dry_run,
+                    cover_fetcher=cover_fetcher,
                 )
             )
         return results

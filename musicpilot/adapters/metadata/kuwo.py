@@ -63,6 +63,23 @@ def _decode(text: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+_COVER_PREFIX = re.compile(r"^(\d{2,4})/")
+# 列表缩略图与编辑器大图都够用的尺寸，一张百来 KB
+_COVER_SIZE = 500
+
+
+def _cover(path: Any) -> str | None:
+    """``120/s3s94/93/211513640.jpg`` → 500px 的封面地址。
+
+    酷我给的是相对路径，前缀那个数字就是尺寸；不换的话下载回来只有 120×120。
+    """
+    text = str(path or "").strip()
+    if not text:
+        return None
+    text = _COVER_PREFIX.sub(f"{_COVER_SIZE}/", text, count=1)
+    return f"https://img1.kuwo.cn/star/albumcover/{text}"
+
+
 def _stamp(seconds: Any) -> str | None:
     try:
         value = float(seconds)
@@ -153,7 +170,8 @@ class KuwoProvider:
                     # 酷我字段里没有单独的专辑艺术家位置，合辑靠歌手 / 专辑名匹配
                     album_artist=artist_name,
                     year=year,
-                    cover_url=f"https://img1.kuwo.cn/star/albumcover/{cover_short}" if cover_short else None,
+                    # web_albumpic_short 带 ``120/`` 前缀：那是缩略图尺寸，换成 500 才是大图
+                    cover_url=_cover(cover_short),
                     source=self.name,
                     external_id=str(rid).removeprefix("MUSIC_"),
                 )

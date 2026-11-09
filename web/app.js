@@ -81,6 +81,9 @@ const state = {
     loaded: false, loading: false, tracks: [], stats: {}, sources: [], libraryDir: '', warnings: [],
     filter: 'all', lyricFilter: 'all', coverFilter: 'all', kindFilter: 'all', genre: '', query: '',
     tab: 'tracks', view: localStorage.getItem('mp-lib-view') || 'table',
+    // 排序：维度 + 方向。刷新后保持，和视图 / 每页条数一样存在 localStorage
+    sort: localStorage.getItem('mp-lib-sort') || 'default',
+    direction: localStorage.getItem('mp-lib-dir') || 'asc',
     page: 1, pageSize: Number(localStorage.getItem('mp-lib-size')) || 50, openGroup: '',
     // 概览的短时缓存：{ at, stats, tracks, sources }，60s 内重复进概览不再请求 /api/library
     dashCache: null,
@@ -701,6 +704,17 @@ const LYRIC_FILTERS = [['all', '全部歌词'], ['yes', '有歌词'], ['no', '�
 const COVER_FILTERS = [['all', '全部封面'], ['yes', '有封面'], ['no', '无封面']];
 const KIND_FILTERS = [['all', '全部类型'], ['single', '单曲'], ['album', '专辑曲目']];
 const PAGE_SIZES = [20, 50, 100];
+/** 可排序的维度：与后端 musicpilot/domain/sorting.py 的 SORT_FIELDS 一一对应。
+ * 表头点一下切换方向，同一列再点就反过来，点第三下回到默认顺序。 */
+const SORT_FIELDS = [
+  ['default', '默认顺序'],
+  ['added', '添加时间'],
+  ['modified', '修改时间'],
+  ['duration', '时长'],
+  ['album', '专辑'],
+  ['artist', '艺术家'],
+];
+const sortLabel = (id) => (SORT_FIELDS.find(([key]) => key === id) || SORT_FIELDS[0])[1];
 const FIELD_NAMES = {
   title: '标题', artist: '歌手', album: '专辑', album_artist: '专辑艺术家',
   year: '年份', track_number: '专辑轨号', disc_number: '碟号', lyrics: '歌词', cover: '封面',
@@ -744,6 +758,128 @@ function libraryVisible() {
     if (!needle) return true;
     return trackSearchText(track).includes(needle);
   });
+}
+
+/* ---- 排序：维度 + 方向，规则与后端 domain/sorting.py 对齐 ---- */
+/** 缺值恒定垫底：升序降序都排在最后，不让一屏「—」挡住有内容的行。 */
+const SORT_NULL = Symbol('null');
+
+const SORT_VALUES = {
+  added: (track) => (Number(track.created_at) > 0 ? Number(track.created_at) : SORT_NULL),
+  modified: (track) => (Number(track.modified_at) > 0 ? Number(track.modified_at) : SORT_NULL),
+  duration: (track) => (Number(track.duration) > 0 ? Number(track.duration) : SORT_NULL),
+  album: (track) => (track.album ? String(track.album).trim().toLowerCase() : SORT_NULL),
+  artist: (track) => (track.artist ? String(track.artist).trim().toLowerCase() : SORT_NULL),
+};
+
+/** 同值与缺值的兜底次序：专辑 → 轨号 → 文件名，两次排序结果一致。 */
+function sortTiebreak(track) {
+  return [
+    String(track.album || '').toLowerCase(),
+    Number(track.track_number) || 0,
+    Number(track.disc_number) || 0,
+    String(track.name || track.path || '').toLowerCase(),
+  ];
+}
+function compareTie(a, b) {
+  const left = sortTiebreak(a);
+  const right = sortTiebreak(b);
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] < right[i]) return -1;
+    if (left[i] > right[i]) return 1;
+  }
+  return 0;
+}
+/** 排序后的新数组：不原地改 state.library.tracks，切回默认顺序时还是原始枚举顺序。 */
+function sortTracks(tracks) {
+  const field = SORT_VALUES[state.library.sort] ? state.library.sort : 'default';
+  const descending = state.library.direction === 'desc';
+  const list = [...tracks];
+  if (field === 'default') return descending ? list.reverse() : list;
+  const valueOf = SORT_VALUES[field];
+  const present = list.filter((track) => valueOf(track) !== SORT_NULL);
+  const missing = list.filter((track) => valueOf(track) === SORT_NULL);
+  present.sort((a, b) => {
+    const left = valueOf(a);
+    const right = valueOf(b);
+    if (left < right) return descending ? 1 : -1;
+    if (left > right) return descending ? -1 : 1;
+    return compareTie(a, b);
+  });
+  missing.sort(compareTie);
+  return present.concat(missing);
+}
+/** 时长：库里只有秒，按「3:45」写；读不出来就留短横线，不写 0:00 假装知道。 */
+function fmtTrackDuration(seconds) {
+  const total = Math.round(Number(seconds) || 0);
+  if (!total) return '—';
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = String(total % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+}
+/** 列表里的时间只留「年-月-日」，完整时间放 title，不用鼠标悬停也能看个大概。 */
+function fmtShortTime(stamp) {
+  const value = Number(stamp) || 0;
+  if (!value) return '—';
+  const date = new Date(value * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+/** 添加时间的来源如实写在悬停提示里：btime 是创建时间，ctime / mtime 只是兜底。 */
+function createdHint(track) {
+  const full = fmtTime(track.created_at);
+  const source = { birthtime: '文件创建时间', ctime: '文件状态变更时间（该文件系统不给创建时间）', mtime: '修改时间（没有更早的时间可用）' }[track.created_source] || '文件时间';
+  return `添加时间 ${full} · 取自${source}`;
+}
+
+/** 排序后的可见曲目：筛选 → 排序，分页与分组都吃这一份顺序。 */
+function libraryOrdered() {
+  return sortTracks(libraryVisible());
+}
+/** 表头点击：换维度按升序开局，同一维度再点翻方向，第三下回到默认顺序。 */
+function toggleSort(field) {
+  const store = state.library;
+  if (field === 'default') {
+    store.sort = 'default';
+    store.direction = 'asc';
+  } else if (store.sort !== field) {
+    store.sort = field;
+    store.direction = 'asc';
+  } else if (store.direction === 'asc') {
+    store.direction = 'desc';
+  } else {
+    store.sort = 'default';
+    store.direction = 'asc';
+  }
+  store.page = 1;
+  localStorage.setItem('mp-lib-sort', store.sort);
+  localStorage.setItem('mp-lib-dir', store.direction);
+  paintLibraryBody();
+  syncSortControls();
+}
+
+/** 工具条跟着状态走：表头点出来的维度与方向，下拉和按钮必须显示同一件事。 */
+function syncSortControls() {
+  const store = state.library;
+  const select = $('lib-sort');
+  if (select) select.value = store.sort;
+  const button = $('lib-dir');
+  if (!button) return;
+  button.disabled = store.sort === 'default';
+  button.textContent = store.direction === 'desc' ? '降序 ↓' : '升序 ↑';
+  button.title = store.direction === 'desc' ? '当前降序，点一下改升序' : '当前升序，点一下改降序';
+}
+/** 可点表头：带方向箭头与 aria-sort，读屏和鼠标都说得清现在是哪种排法。 */
+function sortableTh(field, label, className) {
+  const store = state.library;
+  const active = store.sort === field;
+  const arrow = active ? (store.direction === 'desc' ? '↓' : '↑') : '';
+  const aria = active ? (store.direction === 'desc' ? 'descending' : 'ascending') : 'none';
+  return `<th class="${className} lib-sortable${active ? ' active' : ''}" data-lib-sort="${field}"
+    aria-sort="${aria}" tabindex="0" role="button"
+    title="按${esc(label)}排序（点一下升序，再点降序，第三下回到默认顺序）">
+    <span class="lib-sort-label">${esc(label)}${arrow ? `<em class="lib-sort-arrow">${arrow}</em>` : ''}</span></th>`;
 }
 /** 搜索字段与占位文案一致：标题 / 歌手 / 专辑 / 专辑艺术家 / 文件名 / 目录 / 流派。 */
 const trackSearchText = (track) => [track.title, track.artist, track.album, track.album_artist,
@@ -805,7 +941,10 @@ function libraryTable(tracks) {
       <td class="lib-col-album" title="${esc(track.album || '')}">${dash(track.album)}</td>
       <td class="lib-col-artist" title="${esc(track.artist || '')}">${dash(track.artist)}</td>
       <td class="lib-col-genre" title="${esc(track.genre || '')}">${dash(track.genre)}</td>
+      <td class="lib-col-duration mono tiny">${esc(fmtTrackDuration(track.duration))}</td>
       <td class="lib-col-format"><span class="lib-tag mono">${esc(trackFormat(track))}</span></td>
+      <td class="lib-col-added mono tiny" title="${esc(createdHint(track))}">${esc(fmtShortTime(track.created_at))}</td>
+      <td class="lib-col-modified mono tiny">${esc(fmtShortTime(track.modified_at))}</td>
       <td class="lib-col-complete">${ringHtml(percent, completenessTone(percent / 100))}</td>
       <td class="lib-col-lyrics">${track.has_lyrics
         ? '<span class="lib-flag-icon ok" title="有歌词">✓</span>'
@@ -823,11 +962,18 @@ function libraryTable(tracks) {
   }).join('');
   return `<div class="table-wrap lib-table-wrap"><table class="lib-table">
       <thead><tr>
-        <th class="lib-col-track">曲目</th><th class="lib-col-album">专辑</th><th class="lib-col-artist">歌手</th>
-        <th class="lib-col-genre">流派</th><th class="lib-col-format">格式</th><th class="lib-col-complete">完整度</th>
+        ${sortableTh('default', '曲目', 'lib-col-track')}
+        ${sortableTh('album', '专辑', 'lib-col-album')}
+        ${sortableTh('artist', '艺术家', 'lib-col-artist')}
+        <th class="lib-col-genre">流派</th>
+        ${sortableTh('duration', '时长', 'lib-col-duration')}
+        <th class="lib-col-format">格式</th>
+        ${sortableTh('added', '添加时间', 'lib-col-added')}
+        ${sortableTh('modified', '修改时间', 'lib-col-modified')}
+        <th class="lib-col-complete">完整度</th>
         <th class="lib-col-lyrics">歌词</th><th class="lib-col-state">类型 / 状态</th><th class="lib-col-actions">操作</th>
       </tr></thead>
-      <tbody>${rows || emptyCell('i-funnel', '当前筛选条件下没有曲目', 9)}</tbody></table></div>`;
+      <tbody>${rows || emptyCell('i-funnel', '当前筛选条件下没有曲目', 12)}</tbody></table></div>`;
 }
 
 /* ---- 网格视图：左封面右文字的横条小卡，比原来的竖排大卡片矮一半 ---- */
@@ -973,7 +1119,8 @@ function paintLibraryBody() {
   localStorage.setItem('mp-lib-view', store.view);
   const box = $('lib-body');
   if (!box) return;
-  const visible = libraryVisible();
+  // 顺序只在 libraryOrdered 一处算：表格 / 分组 / 分页拿到的都是同一份
+  const visible = libraryOrdered();
   const counts = libraryTabCounts(visible);
   // 只补这一首 / 写入标签会就地改标记，统计卡跟着重算，不用整页重扫
   const statBox = $('lib-stats');
@@ -1051,6 +1198,27 @@ function bindLibraryActions() {
       try { next.setSelectionRange(at, at); } catch { /* 某些浏览器在 type=search 上不支持 */ }
     };
   }
+  // 表头点击 / 回车 / 空格都能排序，键盘用户不用摸鼠标
+  document.querySelectorAll('[data-lib-sort]').forEach((cell) => {
+    cell.onclick = () => toggleSort(cell.dataset.libSort);
+    cell.onkeydown = (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggleSort(cell.dataset.libSort);
+    };
+  });
+  const sortSelect = $('lib-sort');
+  if (sortSelect) {
+    sortSelect.onchange = () => {
+      store.sort = sortSelect.value;
+      if (store.sort === 'default') store.direction = 'asc';
+      store.page = 1;
+      localStorage.setItem('mp-lib-sort', store.sort);
+      localStorage.setItem('mp-lib-dir', store.direction);
+      paintLibraryBody();
+      syncSortControls();
+    };
+  }
   const lyric = $('lib-lyric');
   if (lyric) lyric.onchange = () => { store.lyricFilter = lyric.value; store.page = 1; paintLibraryBody(); };
   const cover = $('lib-cover');
@@ -1063,7 +1231,12 @@ function bindLibraryActions() {
   if (filterBtn) filterBtn.onclick = () => { const node = $('lib-search'); node?.focus(); node?.select(); };
   const reset = $('lib-reset');
   if (reset) reset.onclick = () => {
-    Object.assign(store, { query: '', filter: 'all', lyricFilter: 'all', coverFilter: 'all', kindFilter: 'all', genre: '', page: 1, openGroup: '' });
+    Object.assign(store, {
+      query: '', filter: 'all', lyricFilter: 'all', coverFilter: 'all', kindFilter: 'all',
+      genre: '', page: 1, openGroup: '', sort: 'default', direction: 'asc',
+    });
+    localStorage.setItem('mp-lib-sort', 'default');
+    localStorage.setItem('mp-lib-dir', 'asc');
     if ($('lib-search')) $('lib-search').value = '';
     paintLibraryBody();
   };
@@ -1083,6 +1256,23 @@ function bindLibraryActions() {
       jump();
     };
   });
+  bindSortControls();
+}
+
+/** 排序工具条的两个控件：维度下拉在 bindLibraryActions 里挂，方向按钮这里挂。 */
+function bindSortControls() {
+  const store = state.library;
+  syncSortControls();
+  const button = $('lib-dir');
+  if (!button) return;
+  button.onclick = () => {
+    if (store.sort === 'default') return;
+    store.direction = store.direction === 'desc' ? 'asc' : 'desc';
+    store.page = 1;
+    localStorage.setItem('mp-lib-dir', store.direction);
+    paintLibraryBody();
+    syncSortControls();
+  };
 }
 
 /** 分页：委托在整个页面上，翻页 / 改每页条数都不会因为节点重建而失效。 */
@@ -1414,7 +1604,7 @@ async function saveCorePending() {
     const ok = await modalConfirm({
       title: '写入标签',
       body: `<p>将写入：<b>${esc(labels.join('、'))}</b></p>
-        <p class="small muted">只补空字段，文件里已有的标签一个都不会被覆盖。</p>`,
+        <p class="small muted">只补空字段，文件里已有的标签与封面都不会被覆盖。</p>`,
       hint: '文件位置不变：不移动、不复制、不建硬链接或软链接。',
       confirmLabel: '确认写入',
     });
@@ -2646,7 +2836,7 @@ async function renderLibrary() {
   const counts = libraryTabCounts(visible);
   const searchFields = '搜索标题 / 歌手 / 专辑 / 专辑艺术家 / 文件名';
   $('page').innerHTML = `
-    <div class="banner info">批量补全只写标签：不移动、不复制、不建硬链接或软链接，文件位置一律不变。</div>
+    <div class="banner info">批量补全只写标签与封面：不移动、不复制、不建硬链接或软链接，文件位置一律不变；已有封面不覆盖。</div>
     ${libraryStats()}
     <div class="panel lib-panel">
       <div class="panel-head">
@@ -2686,6 +2876,15 @@ async function renderLibrary() {
         </div>
         <div class="lib-toolrow-right">
           <span class="small muted" id="lib-count"></span>
+          <div class="lib-sortbar" role="group" aria-label="排序">
+            <select id="lib-sort" class="lib-select lib-select-small" aria-label="排序维度">
+              ${SORT_FIELDS.map(([id, label]) => `<option value="${id}"${store.sort === id ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+            </select>
+            <button class="ghost-btn small" id="lib-dir" ${store.sort === 'default' ? 'disabled' : ''}
+              title="${store.direction === 'desc' ? '当前降序，点一下改升序' : '当前升序，点一下改降序'}">
+              ${store.direction === 'desc' ? '降序 ↓' : '升序 ↑'}
+            </button>
+          </div>
           <div class="lib-viewswitch" role="group" aria-label="视图切换">
             <button class="icon-btn small${store.view === 'table' ? ' active' : ''}" data-lib-view="table"
               title="表格视图" aria-label="表格视图">${spriteIcon('i-table')}</button>

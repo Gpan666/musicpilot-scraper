@@ -71,9 +71,20 @@ def _track_or_404(context: AppContext, path: str) -> LibraryTrack:
 
 
 @router.get("")
-async def list_library(context: AppContext = Depends(get_context)) -> dict[str, Any]:
+async def list_library(
+    sort: str | None = Query(default=None, max_length=20),
+    direction: str | None = Query(default=None, max_length=8),
+    context: AppContext = Depends(get_context),
+) -> dict[str, Any]:
+    """曲库列表。``sort`` / ``direction`` 只改摆放顺序，不改统计与筛选口径。
+
+    认不出的维度或方向一律退回默认（目录 + 文件名 / 升序），不报错：
+    前端多传一个陌生参数，也应该看到一份能用的列表。
+    """
     runtime = context.settings.get()
-    payload = await asyncio.to_thread(context.library.list_tracks, runtime)
+    payload = await asyncio.to_thread(
+        context.library.list_tracks, runtime, sort=sort, direction=direction
+    )
     payload["sources"] = _sources_payload(context, runtime)
     payload["write_tags"] = runtime.write_tags
     payload["transfer_modes"] = [
@@ -215,9 +226,9 @@ def _candidate_fields(track: LibraryTrack, candidate: TrackMetadata) -> list[dic
         if key == "cover":
             current = "有封面" if track.has_cover else ""
             proposed = "有封面" if candidate.cover_url else ""
-            # 库补全这条路只写标签文本，不内嵌封面：别让界面上写着「会写入封面」却不落盘
-            will_write = False
-            note = "补全只写标签文本，不内嵌封面"
+            # 与 plan_fill 同源：空着 + 候选有图 = 真会内嵌；已有封面一律不覆盖
+            will_write = "cover" in planned
+            note = "" if will_write else ("文件里已有封面，不覆盖" if current else "")
         elif key == "lyrics":
             current = "有歌词" if (track.metadata.lyrics or "").strip() else ""
             proposed = "有歌词" if (candidate.lyrics or "").strip() else ""
@@ -322,6 +333,11 @@ async def _fetch_lyrics(context: AppContext, meta: TrackMetadata) -> Any:
     return await context.metadata.fetch_lyrics(meta)
 
 
+def _cover_fetcher(context: AppContext) -> Any:
+    """把封面 URL 变成真图字节；走的是同一个 MetadataService 客户端（代理设置一致）。"""
+    return context.metadata.cover
+
+
 @router.post("/apply")
 async def library_apply(
     payload: LibraryScrapeApply,
@@ -348,6 +364,8 @@ async def library_apply(
         runtime=runtime,
         with_lyrics=payload.with_lyrics,
         write=not payload.dry_run,
+        # 封面和标签一样是「空着才补」：候选有图、文件没图，就把真图内嵌进去
+        cover_fetcher=_cover_fetcher(context) if payload.with_cover else None,
     )
     missing = missing_fields(
         replace(
@@ -380,6 +398,7 @@ async def library_apply(
         ],
         "skipped": result.get("skipped", ""),
         "lyrics_reason": lyrics_reason,
+        "cover_reason": result.get("cover_reason", ""),
         "moved": False,
         "still_missing": missing,
         "still_missing_labels": [FIELD_LABELS.get(name, name) for name in missing],
@@ -511,7 +530,7 @@ async def library_fill(
     if not payload.dry_run and not runtime.write_tags:
         raise HTTPException(status_code=400, detail="当前设置关闭了「写入音频标签」")
     # 补全与「转移方式」无关：这里既不移动也不复制，更不会建链接。
-    note = "补全只改标签；文件位置、目录结构与链接关系一律不变。"
+    note = "补全只改标签与封面；文件位置、目录结构与链接关系一律不变。"
 
     usable = {
         name: context.metadata.providers[name]
@@ -528,6 +547,7 @@ async def library_fill(
         candidate, score = best
         return candidate if score >= floor else None
 
+    embed_cover = bool(getattr(payload, "with_cover", True))
     results = await context.library.fill_batch(
         runtime,
         resolve_one=resolve_one,
@@ -535,6 +555,7 @@ async def library_fill(
         limit=payload.limit,
         with_lyrics=payload.with_lyrics,
         dry_run=payload.dry_run,
+        cover_fetcher=_cover_fetcher(context) if embed_cover else None,
     )
     filled = [row for row in results if row.get("written") or row.get("would_write")]
     return {
