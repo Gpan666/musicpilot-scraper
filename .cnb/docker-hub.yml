@@ -4,13 +4,13 @@
 # 同分支多段 pipeline 会并发执行，某个文件写坏了不会拖累另外两个。
 #
 # 触发与产物（镜像名固定 docker.io/<DOCKER_HUB_NAMESPACE>/<仓库名小写>）：
-#   main  push   → :latest + :sha-<短 SHA> + :edge
-#   tag  push    → 语义化标签全家桶（见下）+ :sha-<短 SHA>，正式版同时回写 :latest
+#   main  push   → :latest
+#   tag  push    → 完整版本号（如 1.2.3）；正式版同时回写 :latest
 #   手工触发     → 选 tag 推送事件重发某个版本；不接 PR，免得 PR 里就能改写 Docker Hub 标签
 #
 # 语义化标签（tag 形如 v1.2.3 / 1.2.3，预发布后缀 -rc.1 这类不参与主次标签）：
-#   v1.2.3 → :v1.2.3 :1.2.3 :v1.2 :1.2 :v1 :1 :latest :sha-xxxxxxx
-#   预发布 → 只推 :v1.2.3-rc.1 :1.2.3-rc.1 :sha-xxxxxxx，绝不覆盖 latest
+#   v1.2.3 → :1.2.3 :latest
+#   预发布 → 只推 :1.2.3-rc.1，绝不覆盖 latest
 #
 # 需要的密钥：在密钥仓库 tsbyj.666/github-sync-secrets 的 docker-hub.yml 里声明
 #   DOCKER_HUB_NAMESPACE: 你的 Docker Hub 用户名（或组织名）
@@ -59,8 +59,8 @@
         REF=""
       fi
 
-      # ---- 语义化标签推导 ----------------------------------------------
-      # VERSION 只用于 OCI 标签与日志，TAGS 才是真正推上去的那几个。
+      # ---- 版本号推导 ------------------------------------------------
+      # VERSION 用于 OCI 标签与日志，TAGS 只包含最终要推的标签。
       TAGS=""
       VERSION=""
       PRE=""
@@ -84,18 +84,21 @@
       if [ -n "${MAJOR}" ] && [ -n "${MINOR}" ] && [ -n "${PATCH}" ]; then
         VERSION="${MAJOR}.${MINOR}.${PATCH}"
         [ -n "${PRE}" ] && VERSION="${VERSION}-${PRE}"
-        CORE_TAGS="v${VERSION} ${VERSION}"
         if [ -z "${PRE}" ]; then
-          # 正式版：主次号 + 大版本号都跟着走，:1 / :1.2 永远指该线最新补丁
-          CORE_TAGS="${CORE_TAGS} v${MAJOR}.${MINOR} ${MAJOR}.${MINOR} v${MAJOR} ${MAJOR} latest"
+          # 正式版：完整版本号 + latest
+          CORE_TAGS="${VERSION} latest"
+        else
+          # 预发布：只推完整预发布版本号，不覆盖 latest
+          CORE_TAGS="${VERSION}"
         fi
       elif [ -n "${REF}" ]; then
         # 非语义化 tag（例如 date-20240501）原样推，不带 latest
         VERSION="${REF}"
         CORE_TAGS="${REF}"
       else
-        VERSION="edge"
-        CORE_TAGS="edge latest"
+        # main 分支 push：只推 latest
+        VERSION="latest"
+        CORE_TAGS="latest"
       fi
 
       if [ "${PUSH_ENABLED}" = "false" ]; then
@@ -104,8 +107,7 @@
         PUSH_FLAG=""
       else
         IMAGE_REPO="docker.io/${DOCKER_HUB_NAMESPACE}/${CNB_REPO_NAME_LOWERCASE}"
-        EXTRA_TAGS="${CNB_COMMIT_SHORT:+sha-${CNB_COMMIT_SHORT}}"
-        for name in ${CORE_TAGS} ${EXTRA_TAGS}; do
+        for name in ${CORE_TAGS}; do
           TAGS="${TAGS} -t ${IMAGE_REPO}:${name}"
         done
         PUSH_FLAG="--push"
@@ -126,7 +128,7 @@
 
 main:
   push:
-    - name: docker-hub-edge
+    - name: docker-hub-latest
       <<: *docker-hub-image
       imports:
         - https://cnb.cool/tsbyj.666/github-sync-secrets/-/blob/main/docker-hub.yml
