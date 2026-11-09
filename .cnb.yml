@@ -1,12 +1,14 @@
-# 仓库流水线入口，三套流水线拆文件维护，互不干扰：
-#
-#   .cnb/github-sync.yml  GitHub 同步（push main 后把代码同步到 GitHub）
-#   .cnb/docker-hub.yml   镜像发布（多架构构建并推 Docker Hub，缺凭据时自动跳过）
-#   .cnb/release.yml      版本发布（打 tag 时校验版本号，建 CNB Release + GitHub Release）
-#
-# 同一分支下的多段 pipeline 会并发执行；某个文件写坏了不会拖累另一个。
-
 include:
   - .cnb/github-sync.yml
   - .cnb/docker-hub.yml
   - .cnb/release.yml
+
+$:
+  vscode:
+    - runner:
+        cpus: 64  # 内存自动分配为 128 GB
+      docker:
+        image: cnbcool/default-dev-env:latest
+      services:
+        - vscode
+        - docker
