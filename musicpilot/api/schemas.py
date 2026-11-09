@@ -69,6 +69,8 @@ class LibraryScrapeApply(BaseModel):
     with_lyrics: bool = True
     fetch_lyrics: bool = False
     lyrics_only: bool = False
+    # 候选带封面、文件里没封面时，把真图内嵌进去（已有封面不覆盖）
+    with_cover: bool = True
     dry_run: bool = False
 
 
@@ -93,5 +95,6 @@ class LibraryFillRequest(BaseModel):
     sources: list[str] = Field(default_factory=list, max_length=10)
     paths: list[str] = Field(default_factory=list, max_length=2000)
     with_lyrics: bool = True
+    with_cover: bool = True
     dry_run: bool = False
     limit: int | None = Field(default=None, ge=1, le=2000)

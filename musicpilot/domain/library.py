@@ -66,6 +66,10 @@ def plan_fill(
             planned[name] = after
     if with_lyrics and not (local.lyrics or "").strip() and merged.lyrics:
         planned["lyrics"] = merged.lyrics
+    # 封面不写文本标签，但要和别的字段一样进「将写入」清单：
+    # 预览说会写封面，落盘就得真内嵌；说不会写，就一个字节都不加。
+    if merged.cover_url and not (local.cover_url or "").strip():
+        planned["cover"] = merged.cover_url
     return planned
 
 

@@ -1,8 +1,13 @@
-"""酷狗音乐：搜索走 song_search_v2，歌词走 krcs 的 search + download。
+"""酷狗音乐：搜索走 song_search_v2，封面走 album/info，歌词走 krcs 的 search + download。
 
 旧的 ``mobilecdn.kugou.com/api/v3/search/song`` 现在稳定返回空 body（接口已失效），
 换成网页版在用的 ``songsearch.kugou.com/song_search_v2``：``data.lists`` 里每首带
 ``FileHash`` / ``SingerName`` / ``AlbumName``，FileHash 就是取词用的 id。
+
+封面：``song_search_v2`` 的 ``AlbumImage`` 常年是空串，只有 ``Image``（歌手的头像图，
+按 ``{size}`` 占位）——拿歌手头像当专辑封面等于骗人。所以这里用每首自带的 ``AlbumID``
+去 ``mobiles.kugou.com/api/v3/album/info`` 取真正的专辑封面（同一套 ``{size}`` 模板），
+搜索阶段并发查、按 AlbumID 去重，查不到就留空，绝不回落到歌手头像。
 
 歌词两步走：``krcs.kugou.com/search?hash=<FileHash>`` 拿 candidates（id + accesskey），
 再 ``krcs.kugou.com/download?fmt=lrc`` 拿正文。download 在 ``lyrics.kugou.com`` 上会挂住不返回，
@@ -12,8 +17,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -28,6 +35,7 @@ from musicpilot.adapters.metadata.base import (
 from musicpilot.domain.models import TrackMetadata
 
 _SEARCH_URL = "https://songsearch.kugou.com/song_search_v2"
+_ALBUM_URL = "https://mobiles.kugou.com/api/v3/album/info"
 _LYRIC_SEARCH_URL = "https://krcs.kugou.com/search"
 _LYRIC_DOWNLOAD_URL = "https://krcs.kugou.com/download"
 _HEADERS = {
@@ -37,6 +45,8 @@ _HEADERS = {
 _KRC_WRAPPED = re.compile(r'krc1\|"(?P<body>.*)"\|\s*$', re.S)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _BASE64 = re.compile(r"^[A-Za-z0-9+/=\s]+$")
+# 封面取 480px：够 72px 缩略图与编辑器大图，又不至于一次拉几百 KB
+_COVER_SIZE = "480"
 
 
 def _strip_krc(text: str) -> str:
@@ -50,6 +60,16 @@ def _strip_krc(text: str) -> str:
 
 def _plain(text: Any) -> str:
     return _HTML_TAG.sub("", str(text or "")).replace("&nbsp;", " ").strip()
+
+
+def _cover(url: Any, size: str = _COVER_SIZE) -> str | None:
+    """酷狗封面是 ``.../{size}/...jpg`` 模板，按需换尺寸；不带模板的原样返回。"""
+    text = str(url or "").strip()
+    if not text:
+        return None
+    if text.startswith("//"):
+        text = f"https:{text}"
+    return text.replace("{size}", size)
 
 
 class KugouProvider:
@@ -93,6 +113,7 @@ class KugouProvider:
         data = payload.get("data") if isinstance(payload, dict) else None
         songs = data.get("lists", []) if isinstance(data, dict) else []
         candidates: list[TrackMetadata] = []
+        album_ids: list[str] = []
         for song in songs if isinstance(songs, list) else []:
             if not isinstance(song, dict):
                 continue
@@ -109,9 +130,43 @@ class KugouProvider:
                     external_id=str(hash_id),
                 )
             )
+            album_ids.append(str(song.get("AlbumID") or ""))
             if len(candidates) >= limit:
                 break
-        return candidates
+        covers = await self._album_covers(album_ids)
+        return [
+            replace(candidate, cover_url=covers.get(album_id))
+            for candidate, album_id in zip(candidates, album_ids, strict=True)
+        ]
+
+    async def _album_covers(self, album_ids: list[str]) -> dict[str, str | None]:
+        """按 AlbumID 并发取专辑封面；同一个专辑只查一次，失败就当没有。"""
+        wanted = [album_id for album_id in dict.fromkeys(album_ids) if album_id.isdigit()]
+        if not wanted:
+            return {}
+
+        async def one(album_id: str) -> tuple[str, str | None]:
+            try:
+                response = await self._client.get(
+                    _ALBUM_URL,
+                    params={"albumid": album_id},
+                    headers=_HEADERS,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except Exception:  # noqa: BLE001 - 没封面不该拖垮搜索
+                return album_id, None
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict):
+                return album_id, None
+            for key in ("imgurl", "imgurl9", "imgurl2", "banner"):
+                cover = _cover(data.get(key))
+                if cover:
+                    return album_id, cover
+            return album_id, None
+
+        pairs = await asyncio.gather(*(one(album_id) for album_id in wanted))
+        return dict(pairs)
 
     async def lyrics(self, song_id: str, *, album: str | None = None) -> LyricsResult:
         try:

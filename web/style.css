@@ -1559,22 +1559,50 @@ td.empty .empty-text { display: inline; }
 .lib-table tbody tr { cursor: pointer; }
 .lib-table tbody tr:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 .lib-table tbody tr.gap td:first-child { box-shadow: inset 3px 0 0 color-mix(in srgb, var(--warn) 70%, transparent); }
-/* 列宽：曲目 26%（上下限卡死 280–340），专辑/歌手/流派共 31%，
- * 格式/完整度/歌词/状态/操作共 43%——合计 100%，宽屏不会被某一列吞掉剩余宽度。 */
-.lib-table .lib-col-track { width: 26%; min-width: 280px; max-width: 340px; }
+/* 列宽：曲目 22%（上下限卡死 240–300），专辑/艺术家/流派共 31%，
+ * 时长/格式/添加时间/修改时间/完整度/歌词/状态/操作共 47%——合计 100%。
+ * 窄屏由 .lib-table-wrap 横向滚动兜住，不压缩到看不清。 */
+.lib-table .lib-col-track { width: 22%; min-width: 240px; max-width: 300px; }
 .lib-table .lib-col-album { width: 12%; }
 .lib-table .lib-col-artist { width: 10%; }
-.lib-table .lib-col-genre { width: 9%; }
-.lib-table .lib-col-format { width: 7.5%; }
-.lib-table .lib-col-complete { width: 7.5%; }
-.lib-table .lib-col-lyrics { width: 7%; }
-.lib-table .lib-col-state { width: 8%; }
-.lib-table .lib-col-actions { width: 10%; text-align: right; }
+.lib-table .lib-col-genre { width: 8%; }
+.lib-table .lib-col-duration { width: 6%; }
+.lib-table .lib-col-format { width: 6.5%; }
+.lib-table .lib-col-added { width: 8.5%; }
+.lib-table .lib-col-modified { width: 8.5%; }
+.lib-table .lib-col-complete { width: 6.5%; }
+.lib-table .lib-col-lyrics { width: 5%; }
+.lib-table .lib-col-state { width: 7.5%; }
+.lib-table .lib-col-actions { width: 9.5%; text-align: right; }
+.lib-table .lib-col-duration,
 .lib-table .lib-col-format,
+.lib-table .lib-col-added,
+.lib-table .lib-col-modified,
 .lib-table .lib-col-complete,
 .lib-table .lib-col-lyrics,
 .lib-table .lib-col-state,
 .lib-table .lib-col-actions { white-space: nowrap; }
+
+/* 可排序表头：整格可点，方向箭头跟在标题后面，不额外占一列宽度 */
+.lib-table th.lib-sortable { cursor: pointer; user-select: none; }
+.lib-table th.lib-sortable:hover { color: var(--text); background: var(--surface-2); }
+.lib-table th.lib-sortable:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.lib-table th.lib-sortable.active { color: var(--primary-soft-text); }
+.lib-sort-label { display: inline-flex; align-items: center; gap: 4px; }
+.lib-sort-arrow {
+  font-style: normal; font-size: var(--fs-footnote); line-height: 1;
+  color: var(--primary-soft-text);
+}
+
+/* 排序工具条：维度下拉 + 方向按钮，紧挨着视图切换 */
+.lib-sortbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px; border-radius: var(--radius-pill);
+  background: var(--surface-2); border: 1px solid var(--divider);
+}
+.lib-sortbar .lib-select-small { padding: 4px 26px 4px 10px; background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; }
+.lib-sortbar .ghost-btn.small { padding: 4px 10px; }
+.lib-sortbar .ghost-btn[disabled] { opacity: .45; cursor: not-allowed; }
 
 /* 表头吸顶：在滚动容器内部贴顶；底色用不透明的 surface，滚过去的行不会透出来 */
 .lib-table thead th {
@@ -1771,6 +1799,9 @@ td.empty .empty-text { display: inline; }
   .lib-selects { width: 100%; }
   .lib-select { flex: 1 1 120px; }
   .lib-toolrow-right { width: 100%; justify-content: space-between; }
+  /* 窄屏排序条占满一行：维度下拉可伸缩，方向按钮不换行 */
+  .lib-sortbar { flex: 1 1 100%; }
+  .lib-sortbar .lib-select-small { flex: 1 1 auto; min-width: 0; }
   .lib-tags { grid-template-columns: minmax(0, 1fr); }
 }
 

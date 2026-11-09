@@ -20,15 +20,20 @@ _ALLOWED_HOSTS = frozenset(
     {
         "music.163.com",  # 网易云
         "musicbrainz.org",  # MusicBrainz
+        "coverartarchive.org",  # Cover Art Archive 裸域名
         "y.gtimg.cn",  # QQ 音乐
         "www.kuwo.cn",  # 酷我
+        "imge.kugou.com",  # 酷狗封面 CDN
     }
 )
 _ALLOWED_SUFFIXES = (
-    ".music.126.net",
-    ".archive.org",
+    ".music.126.net",  # 网易云图床（p1/p2/p3.music.126.net）
+    ".126.net",  # 网易云图床的裸域名变体
+    ".archive.org",  # MusicBrainz Cover Art Archive
+    ".coverartarchive.org",  # Cover Art Archive 的 canonical 主机
     ".gtimg.cn",  # QQ 音乐图片 CDN
-    ".kugou.com",  # 酷狗
+    ".y.qq.com",  # QQ 音乐图片备用路径
+    ".kugou.com",  # 酷狗图片 CDN（imge.kugou.com / singerimg.kugou.com）
     ".kuwo.cn",  # 酷我
     ".kwcdn.com",  # 酷我图片 CDN
 )
